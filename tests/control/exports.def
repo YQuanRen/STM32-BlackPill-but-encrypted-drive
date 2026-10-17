@@ -1,0 +1,5 @@
+EXPORTS
+bp_sha
+bp_mac
+bp_kdf
+bp_gcm

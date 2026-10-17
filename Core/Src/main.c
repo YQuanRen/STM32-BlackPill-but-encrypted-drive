@@ -25,6 +25,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sd_spi.h"
+#include "control_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -89,6 +90,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_SPI1_Init();
+  BP_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
 
@@ -102,6 +104,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     SD_SPI_ActivityTask();
+    BP_Task();
   }
   /* USER CODE END 3 */
 }

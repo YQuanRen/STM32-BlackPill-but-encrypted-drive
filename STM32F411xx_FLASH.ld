@@ -56,7 +56,8 @@ ENTRY(Reset_Handler)
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 128K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 512K
+FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 256K
+/* Sectors 6 and 7 (0x08040000..0x0807FFFF) belong exclusively to BP journal. */
 }
 
 /* Highest address of the user mode stack */
@@ -64,7 +65,7 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);    /* end of RAM */
 _sstack = _estack - _Min_Stack_Size;
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x200;      /* required amount of heap  */
-_Min_Stack_Size = 0x400; /* required amount of stack */
+_Min_Stack_Size = 0x2000; /* 8 KiB minimum; measure crypto + ISR high-water on board */
 
 /* Define output sections */
 SECTIONS

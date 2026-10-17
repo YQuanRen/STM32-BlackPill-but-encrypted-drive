@@ -23,6 +23,7 @@
 
 /* USER CODE BEGIN INCLUDE */
 #include "sd_spi.h"
+#include "control_app.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -178,7 +179,7 @@ int8_t STORAGE_Init_FS(uint8_t lun)
 {
   /* USER CODE BEGIN 2 */
   UNUSED(lun);
-  return SD_SPI_IsReady() ? USBD_OK : USBD_FAIL;
+  return BP_MediaReady() && SD_SPI_IsReady() ? USBD_OK : USBD_FAIL;
   /* USER CODE END 2 */
 }
 
@@ -194,7 +195,7 @@ int8_t STORAGE_GetCapacity_FS(uint8_t lun, uint32_t *block_num, uint16_t *block_
   /* USER CODE BEGIN 3 */
   UNUSED(lun);
 
-  if (!SD_SPI_IsReady())
+  if (!BP_MediaReady() || !SD_SPI_IsReady())
   {
     return USBD_FAIL;
   }
@@ -215,7 +216,7 @@ int8_t STORAGE_IsReady_FS(uint8_t lun)
   /* USER CODE BEGIN 4 */
   UNUSED(lun);
 
-  return SD_SPI_IsReady() ? USBD_OK : USBD_FAIL;
+  return BP_MediaReady() && SD_SPI_IsReady() ? USBD_OK : USBD_FAIL;
   /* USER CODE END 4 */
 }
 
@@ -245,7 +246,9 @@ int8_t STORAGE_Read_FS(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t bl
 {
   /* USER CODE BEGIN 6 */
   UNUSED(lun);
-  return SD_SPI_ReadBlocks(blk_addr, buf, blk_len) ? USBD_OK : USBD_FAIL;
+  if (!BP_MediaReady()) return USBD_FAIL;
+  if (!SD_SPI_ReadBlocks(blk_addr, buf, blk_len)) { BP_StorageFault(); return USBD_FAIL; }
+  return USBD_OK;
   /* USER CODE END 6 */
 }
 
@@ -261,7 +264,9 @@ int8_t STORAGE_Write_FS(uint8_t lun, uint8_t *buf, uint32_t blk_addr, uint16_t b
 {
   /* USER CODE BEGIN 7 */
   UNUSED(lun);
-  return SD_SPI_WriteBlocks(blk_addr, buf, blk_len) ? USBD_OK : USBD_FAIL;
+  if (!BP_MediaReady()) return USBD_FAIL;
+  if (!SD_SPI_WriteBlocks(blk_addr, buf, blk_len)) { BP_StorageFault(); return USBD_FAIL; }
+  return USBD_OK;
   /* USER CODE END 7 */
 }
 

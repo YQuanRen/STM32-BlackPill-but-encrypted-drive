@@ -34,6 +34,10 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+# Standalone crypto compilation only; storage integration is milestone 4.
+add_subdirectory(Crypto)
+add_subdirectory(Control)
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
@@ -46,6 +50,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/sd_spi.c
+    Core/Src/control_app.c
+    USB_DEVICE/App/usbd_composite.c
 )
 
 # Add include paths
@@ -64,6 +70,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
+    bp_control
 
     # Add user defined libraries
 )

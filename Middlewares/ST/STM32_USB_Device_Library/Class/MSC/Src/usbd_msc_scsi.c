@@ -25,6 +25,7 @@ EndBSPDependencies */
 /* Includes ------------------------------------------------------------------*/
 #include "usbd_msc_bot.h"
 #include "usbd_msc_scsi.h"
+#include "control_app.h"
 #include "usbd_msc.h"
 #include "usbd_msc_data.h"
 
@@ -127,6 +128,13 @@ int8_t SCSI_ProcessCmd(USBD_HandleTypeDef *pdev, uint8_t lun, uint8_t *cmd)
 
   if (hmsc == NULL)
   {
+    return -1;
+  }
+
+  /* Report media insertion once after a validated authorization transition. */
+  if ((cmd[0] != SCSI_INQUIRY) && (cmd[0] != SCSI_REQUEST_SENSE) && BP_MediaAttention())
+  {
+    SCSI_SenseCode(pdev, lun, UNIT_ATTENTION, MEDIUM_HAVE_CHANGED);
     return -1;
   }
 
