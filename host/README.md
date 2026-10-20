@@ -7,6 +7,13 @@ installing `host/requirements.txt`. GUI setup and unlock use the existing tested
 protocol/volume modules. Physical acceptance remains pending in
 [VALIDATION.md](VALIDATION.md).
 
+**Fast setup (2026-10-21):** update both firmware and utility. New setups use
+header version 2 and prepare only the first 34 and last 33 logical sectors,
+plus authenticated headers (at most 99 writes total). After unlock, create a
+volume and QUICK-format through the Black Pill in Windows. Old plaintext in
+untouched sectors remains recoverable; this is not sanitization. Existing
+version-1 volumes remain readable without conversion.
+
 ## Build the Windows package
 
 The recorded environment is Windows 11 x64, CPython **3.13.1**, Tk 8.6.15 and
@@ -55,8 +62,8 @@ multi-device selection, dialog cancellation and responsive/busy UI behavior.
 No GUI screenshot or physical Windows disk behavior is implied by these tests.
 
 Milestone 4 implements authenticated setup/unlock and transparent Adiantum sector
-encryption. Flashing alone does not convert an existing card. First setup destroys
-existing files and initializes every exposed sector. Software simulation and target
+encryption. Flashing alone does not convert an existing card. Setup replaces the
+volume and prepares metadata; it does not erase every sector. Software simulation and target
 builds pass; physical Windows/STM32 behavior remains unverified.
 
 ## Setup and unlock
@@ -78,7 +85,7 @@ enrolled board, use its existing file. The CLI creates files exclusively and flu
 them before enrollment. Keep the file after an ambiguous timeout and retry with it.
 Files inherit Windows ACLs; Python cannot guarantee erasure of all secret copies.
 
-Setup reports initialization progress, unlocks on completion and asks you to format
+Setup reports metadata preparation progress, unlocks on completion and asks you to QUICK-format
 the exposed drive using Windows. There is no in-place conversion. For plaintext
 with the board's authentication gate, select `--mode auth` instead. Another card
 reader bypasses that gate. Encrypted card data requires both file and password;
@@ -124,6 +131,7 @@ foreach ($config in @('Debug','Release')) {
     cmake --build build/crypto-host --config $config
     python tests/control/test_control.py "build/control-host/$config/bp_sim.dll"
     python tests/storage/test_storage.py "build/storage-host/$config/storage_sim.dll"
+    python tests/storage/test_fast_setup.py "build/storage-host/$config/storage_sim.dll"
     python tests/crypto/test_adiantum.py "build/crypto-host/$config/adiantum_test.dll"
 }
 ```
@@ -135,6 +143,10 @@ modes, independent ciphertext, reconnect hashes, immutable write buffers, header
 corruption, wrong credentials, geometry/card swaps, SD failures, 80 SD-write cuts
 and 128 binding-write cuts. Control and crypto suites retain primitive vectors,
 reference comparisons, replay/framing tests and journal power-loss simulations.
+The fast-setup suite additionally covers tiny/overlapping metadata regions,
+8/64 GB and UINT32_MAX geometry, the 99-write ceiling, untouched old sectors,
+tail-LBA encryption, 99 write cuts and 35 torn-sector cases per mode, and legacy
+v1 compatibility. The sparse simulator allocates no card-sized memory.
 
 With the existing ST ARM GCC/Ninja bundles on PATH:
 

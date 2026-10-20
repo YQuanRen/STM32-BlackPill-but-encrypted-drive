@@ -96,7 +96,7 @@ class App:
         self.repeat_entry = ttk.Entry(self.passwords, textvariable=self.repeat, show="●")
         self.repeat_entry.grid(row=1, column=1, sticky="ew", pady=4)
         self.controls.extend([self.password_entry, self.repeat_entry])
-        self.confirm_frame = ttk.LabelFrame(self.form, text="Confirm destructive initialization", padding=10)
+        self.confirm_frame = ttk.LabelFrame(self.form, text="Confirm volume replacement", padding=10)
         self.confirm_frame.grid(row=4, column=0, sticky="ew", pady=10)
         self.confirm_frame.columnconfigure(0, weight=1)
         self.card_text = tk.StringVar()
@@ -144,7 +144,7 @@ class App:
                 if kind == "progress":
                     done, total = value
                     self.progress.configure(maximum=max(total, 1), value=done)
-                    self.status.set(f"Initializing: {done:,} of {total:,} sectors. Keep the drive connected.")
+                    self.status.set(f"Preparing metadata: {done:,} of {total:,} sectors. Keep the drive connected.")
                 else:
                     self.busy = False
                     if kind == "error":
@@ -222,7 +222,7 @@ class App:
         d = self.current()
         setting = self.action.get() == "setup"
         self.heading.set("Set up your drive" if setting else "Unlock your drive" if d else "Select a drive")
-        self.detail.set("Setup erases every file on the selected card. Back up first. Save the authentication file on another drive."
+        self.detail.set("Fast setup replaces the volume but does NOT erase old data in untouched sectors. Back up first. Keep the authentication file on another drive."
                         if setting else "Choose this drive's authentication file. Encrypted drives also need the password.")
         self.modes.grid() if setting and not self.setup else self.modes.grid_remove()
         encrypted = (self.setup.mode if self.setup else self.mode.get()) == 2
@@ -230,7 +230,7 @@ class App:
         for widget in (self.repeat_label, self.repeat_entry):
             widget.grid() if setting else widget.grid_remove()
         self.confirm_frame.grid() if self.setup else self.confirm_frame.grid_remove()
-        self.primary.configure(text="Initialize and erase card" if self.setup else "Inspect card and continue" if setting else "Unlock drive")
+        self.primary.configure(text="Replace volume (fast setup)" if self.setup else "Inspect card and continue" if setting else "Unlock drive")
         for control in self.controls:
             control.configure(state="disabled" if self.busy else "normal")
         self.selector.configure(state="disabled" if self.busy else "readonly")
@@ -264,7 +264,7 @@ class App:
                 self.status.set("Type the complete ERASE phrase shown above to confirm this device and card.")
                 return
             self.clear_passwords()
-            self.status.set("Initializing the confirmed card. Keep it connected.")
+            self.status.set("Preparing the confirmed card's metadata. Keep it connected.")
             self.launch(lambda: self.service.initialize(setup, password, phrase, lambda a, b: self.events.put(("progress", (a, b)))), lambda _: self.success(True))
         else:
             mode, create = self.mode.get(), self.create_file
@@ -274,7 +274,7 @@ class App:
                 self.create_file = False
                 self.card_text.set(f"Device: {setup.device.identity}\nCard: {setup.cid.hex()}\n"
                                    f"Capacity: {setup.physical * 512:,} bytes · Mode: {'Encrypted' if setup.mode == 2 else 'Plaintext'}\n"
-                                   f"All existing files will be erased. Type:\n{setup.phrase}")
+                                   f"The current volume will be replaced. Old data may remain recoverable.\nType:\n{setup.phrase}")
                 self.confirmation.set("")
                 self.status.set("Authentication file saved/verified. Back it up before initializing.")
             self.launch(lambda: self.service.prepare(d, file, mode, create), prepared)
@@ -284,7 +284,7 @@ class App:
         self.mounted = True
         self.clear_passwords()
         self.confirmation.set("")
-        self.status.set(("Initialized and unlocked. Use Windows Disk Management to create/format the volume, then restore your files. "
+        self.status.set(("Fast setup complete and unlocked. Use Windows Disk Management to create a volume and QUICK-format through the Black Pill, then restore files. "
                          if initialized else "Unlocked. Open the drive in Windows Explorer. ") +
                         "Safely eject before unplugging; reconnecting locks the drive again.")
 

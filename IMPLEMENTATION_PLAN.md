@@ -1,6 +1,6 @@
 # Optional Adiantum encryption and file-based authentication
 
-Saved: 2026-10-17; updated 2026-10-20 (Asia/Singapore). Status: milestones 1-4 software implemented and tested; milestone 5 GUI and Windows package implemented with software tests passing. Fresh-machine and physical USB/flash/SD acceptance, throughput and stack measurements remain pending. See HANDOFF.md for evidence and host/VALIDATION.md for the acceptance record.
+Saved: 2026-10-17; updated 2026-10-21 (Asia/Singapore). Status: milestones 1-5 software implemented; user authorized fast setup replacing the full-card pass for new volumes. Fresh-machine and physical USB/flash/SD acceptance, throughput and stack measurements remain pending. See HANDOFF.md for evidence and host/VALIDATION.md for the acceptance record.
 
 This document preserves decisions from the planning conversation. Technical defaults below are the intended implementation direction, not a claim that a secure implementation already exists. Resolve the explicitly listed engineering questions before freezing persistent formats or the protocol. Track progress in HANDOFF.md.
 
@@ -20,7 +20,7 @@ First use:
 3. Generate a unique authentication file and require the user to save it outside the locked drive. Recommend a separate backup.
 4. For encrypted mode, create and confirm a password.
 5. Explicitly confirm destructive initialization of the identified device/card. Existing files must be backed up first.
-6. Show initialization progress. After completion, unlock and guide the user through Windows formatting and restoring files.
+6. Show metadata preparation progress. After completion, unlock and guide the user through creating a volume and Windows QUICK-formatting through the Black Pill, then restoring files.
 
 Subsequent use: plug in, open the same utility, select the authentication file, enter the password if encrypted, and unlock. Windows Explorer then accesses normal USB storage. Safe Windows ejection followed by unplugging ends use; the next connection starts locked.
 
@@ -40,6 +40,7 @@ Agreed scope: Windows first, a simple desktop GUI, setup-time mode selection, fr
 - Data keys and expanded cipher state reside only in MCU RAM while unlocked. Clear sensitive buffers on disconnect, reset and fatal storage failure. Ordinary suspend preserves the session; reset handling must be reconciled with Windows enumeration in milestone 3.
 - Host-side cryptography uses maintained libraries. Minimize secret lifetime and copies; do not claim guaranteed Python-process memory erasure.
 - Full accessible-sector initialization is not guaranteed sanitization of remapped SD flash cells.
+- Fast setup (authorized 2026-10-21) does not overwrite/verify the full card. Untouched old plaintext can remain recoverable; unwritten encrypted sectors decrypt to arbitrary bytes. It protects subsequent writes, not old files in place. The UI must disclose this before confirmation.
 
 ## 3. Intended technical design
 
@@ -65,7 +66,7 @@ Agreed scope: Windows first, a simple desktop GUI, setup-time mode selection, fr
 - For encryption, generate a random 256-bit data key and 128-bit salt on Windows. Password derivation defaults: Argon2id, 64 MiB memory, three iterations, parallelism one, 256-bit output. Combine that output and the independent file-derived wrapping secret using a precisely specified HKDF construction.
 - Wrap the data key with AES-256-GCM using a random 96-bit nonce and authenticated immutable metadata. The GUI authenticates/unwraps the key and sends it only inside the protected control session. Incorrect credentials leave the drive locked.
 - Authenticate and validate header fields before trusting mode or geometry. Bound KDF parameters on the host before allocating memory. Do not silently treat corrupt provisioning as a new device.
-- Initialization writes an initializing state, then zeros every exposed sector (encrypted zeros in encrypted mode). Keep MSC unavailable. Complete only after both ready headers are written and verified. Interrupted initialization requires explicit restart, not in-place resume.
+- Fast setup writes an initializing state, then zeros the union of the first 34 and last 33 exposed sectors (encrypted zeros with actual logical-LBA tweaks in encrypted mode). Tiny-card overlaps are written once. Keep MSC unavailable until both ready headers are written/verified. Interrupted setup requires explicit restart. Legacy version-1 volumes retain full-initialization/read compatibility; new version-2 volumes use bounded setup.
 - Use a ciphertext scratch buffer for writes so caller plaintext buffers remain unchanged. Handle block-count overflow and capacity boundaries. Propagate SD failures; do not acknowledge partially failed requests as successful.
 - Run lengthy control/initialization work in the main loop, outside USB interrupts, and serialize state transitions against storage operations.
 
@@ -100,7 +101,7 @@ These are unresolved details, not permission to silently weaken the agreed secur
 5. **USB integration (milestone 3 software implemented):** composite dispatcher, bounded feature reports, endpoint/FIFO allocation, separate HID/MSC state, gated callbacks and unit-attention hook are implemented. Stubbed descriptor/EP0 tests and target builds pass. Physical Windows enumeration, permissions, media discovery and reset/suspend handling remain unverified. Existing ST development VID/PID is retained; obtain authorized production IDs before distribution.
 6. **Persistent formats (milestone 4 software implemented):** Storage/FORMAT.md specifies header bytes, UTF-8 password encoding, exact password/file HKDF and key wrapping, integrity coverage and write ordering. Both headers must validate/match; CID/geometry, journal binding and key check are required. Missing/undersized/swapped cards and corrupt headers fail closed. CLI generates fresh volume IDs/data keys for reinitialization. Journal v1 is readable; new records use v2 volume binding. Debug/Release tests pass; hardware checks remain pending.
 7. **Host delivery (milestone 5 software implemented):** Tkinter GUI, pinned build dependencies and PyInstaller portable Windows x64 package are implemented. Runtime smoke and simulated GUI workflows pass. Intended Windows 10/11 x64 support, fresh-machine installation and HID permissions remain physically unverified. Unsigned-executable behavior is documented; no guaranteed Python secret erasure, production signing or bit-identical rebuild claim is made.
-8. **Performance and acceptance (milestones 4-5):** establish baseline throughput, measure crypto overhead and stack high-water usage, and set realistic timeouts on hardware. No numeric speed target has been agreed. Do not change sector size, weaken crypto or skip initialization for speed without documenting the tradeoff.
+8. **Performance and acceptance (milestones 4-5):** user reported about 10,000 sectors/minute during legacy 64 GB full initialization. Fast setup now bounds setup I/O as authorized, without changing normal encrypted transfer speed. Hardware timing, throughput and stack high-water remain unmeasured. No numeric speed promise is made. Do not change sector size or weaken crypto for speed.
 
 If a choice changes user workflow, credential requirements or threat scope, bring it back to the user. Routine engineering choices consistent with this design can be resolved and recorded during implementation.
 

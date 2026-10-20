@@ -23,6 +23,7 @@ for name, args, result in [
     ('sim_capacity', [], C.c_uint32), ('sim_writes', [], C.c_int),
     ('sim_card', [C.c_int, C.c_int], None),
     ('sim_fault', [C.c_int, C.c_int, C.c_int], None),
+    ('sim_geometry', [C.c_uint32], None),
     ('sim_write', [C.c_uint32, C.c_void_p, C.c_uint16], C.c_int),
     ('sim_read', [C.c_uint32, C.c_void_p, C.c_uint16], C.c_int),
 ]:
@@ -156,6 +157,15 @@ class Workflows(unittest.TestCase):
                 self.service.initialize(ticket, PASSWORD, ticket.phrase)
         self.assertEqual(lib.sim_capacity(), 0)
 
+    def test_large_card_fast_progress(self):
+        lib.sim_geometry(122167296)
+        ticket = self.service.prepare(self.device, self.path, 2, True)
+        progress = []
+        self.service.initialize(ticket, PASSWORD, ticket.phrase, lambda a, b: progress.append((a,b)))
+        self.assertEqual(progress[-1], (67,67))
+        self.assertEqual(lib.sim_writes(), 99)
+        self.assertEqual(lib.sim_capacity(), 122167280)
+
 
 class GUI(unittest.TestCase):
     def setUp(self):
@@ -188,6 +198,8 @@ class GUI(unittest.TestCase):
         self.assertIsNotNone(ticket)
         self.assertEqual(lib.sim_writes(), 0)
         self.assertIn(IDENTITY, self.app.card_text.get())
+        self.assertIn("NOT erase old data", self.app.detail.get())
+        self.assertIn("Old data may remain recoverable", self.app.card_text.get())
         self.app.password.set(PASSWORD)
         self.app.repeat.set('different')
         self.app.confirmation.set(ticket.phrase)
@@ -200,6 +212,7 @@ class GUI(unittest.TestCase):
         self.assertEqual(lib.sim_capacity(), 48)
         self.assertEqual(self.app.password.get(), '')
         self.assertTrue(self.app.primary.instate(['disabled']))
+        self.assertIn("QUICK-format through the Black Pill", self.app.status.get())
         lib.sim_reset()
         self.scan()
         self.assertEqual(self.app.action.get(), 'unlock')

@@ -1,12 +1,18 @@
 # Implementation handoff
 
-Updated: 2026-10-20 (Asia/Singapore).
+Updated: 2026-10-21 (Asia/Singapore).
 
 ## Start here
 
 Read IMPLEMENTATION_PLAN.md before making changes. It is the source of truth for the agreed workflow, security boundaries, technical defaults and open engineering questions. Check `git status --short` and applicable repository instructions at the start of each session. Preserve unrelated user work.
 
 Milestone 5 GUI and Windows packaging are implemented; software tests pass. The portable EXE/ZIP is under `build/`, with instructions in `host/WINDOWS.md`. Physical acceptance is still pending, so milestone 5 is not fully hardware-validated. No physical device was accessed or flashed and no connected SD card was modified. Flashing alone does not encrypt an existing card: explicitly initialize in encrypted mode first.
+
+Fast setup is now the default for NEW volumes, explicitly authorized on 2026-10-21.
+It replaces the full-card pass with bounded metadata preparation. Update firmware
+and utility together, retain the existing authentication file, restart any interrupted
+setup explicitly, then create a volume and QUICK-format through the unlocked Pill.
+Old plaintext in untouched sectors is NOT erased. Completed v1 volumes still unlock.
 
 ## Milestone status
 
@@ -33,7 +39,7 @@ Milestone 5 GUI and Windows packaging are implemented; software tests pass. The 
 
 ## Current implementation and inspection evidence
 
-Firmware starts locked with composite MSC/HID. Production authorization validates both ready headers, durable volume/mode binding, card CID/capacity and the encrypted-mode key check. MSC maps logical LBA to physical LBA+16 and encrypts/decrypts each 512-byte encrypted-mode sector using Adiantum; auth-only data stays plaintext. Initialization writes/verifies every accessible sector before committing ready headers. Target remains STM32F411 with 128 KiB RAM; firmware occupies the first 256 KiB flash, journal sectors 6/7 the remaining 256 KiB. The linker reserves 8 KiB minimum stack, not a measured runtime guarantee.
+Firmware starts locked with composite MSC/HID. Production authorization validates both ready headers, durable volume/mode binding, card CID/capacity and the encrypted-mode key check. MSC maps logical LBA to physical LBA+16 and encrypts/decrypts each 512-byte encrypted-mode sector using Adiantum; auth-only data stays plaintext. New v2 setup verifies only selected metadata sectors before ready headers; v1 retains its legacy full pass. Target remains STM32F411 with 128 KiB RAM; firmware occupies the first 256 KiB flash, journal sectors 6/7 the remaining 256 KiB. The linker reserves 8 KiB minimum stack, not a measured runtime guarantee.
 
 At milestone 2 start, IMPLEMENTATION_PLAN.md and HANDOFF.md were untracked; other tracked files were clean. No applicable AGENTS.md was found. On the 2026-10-19 continuation, prior implementation was already committed by the workspace owner in `be68373` and the tree was clean. Subsequent changes preserve that commit; no commit or flash operation was performed by this session.
 
@@ -83,6 +89,9 @@ Milestone 2 adds `Crypto/adiantum.{c,h}`, pinned MIT primitives/licenses, `Crypt
 
 ## Next session: physical acceptance and release readiness
 
+The latest implementation is fast setup, described below. Historical milestone-4/5
+entries describe the original full-pass behavior, superseded for new v2 volumes.
+
 Suggested prompt:
 
 > Read IMPLEMENTATION_PLAN.md, HANDOFF.md and host/VALIDATION.md. Validate the packaged utility on a fresh Windows machine and the actual board, using an explicitly designated disposable/backed-up card for destructive checks. Record USB behavior, file hashes, raw-card observations, power-loss outcomes, throughput and stack high-water. Resolve failures and update the handoff; do not treat simulation as physical evidence.
@@ -96,6 +105,55 @@ See section 5 of IMPLEMENTATION_PLAN.md. Protocol/storage formats, GUI/packaging
 Development control/file/journal formats are in `Control/PROTOCOL.md`; SD/wrapped-key format is in `Storage/FORMAT.md`. A hardware validation session requires the actual board and an explicitly designated disposable/backed-up card for writes. Host data-hash tests are simulated block streams, not Windows filesystem validation.
 
 ## Validation record
+
+### Fast setup, 2026-10-21
+
+- User reported a 64 GB card exposing 122167280 logical sectors and about 10,000
+  sectors/minute during the old full pass, then explicitly authorized fast setup.
+  Build mode and actual hardware timings remain unverified. The agent did not flash,
+  enumerate, format or write a physical card during this change.
+- `Storage/volume.c` accepts v1/v2; new host proposals use v2. Header offset 8 selects
+  semantics, authenticated by header HMAC and the existing wrapping/key-check AAD.
+  No other field, sector mapping, cipher, KDF, journal binding or credential changed.
+  Old firmware rejects v2 before binding or SD writes. Existing v1 volumes remain
+  readable; an old host still requesting v1 will still run full initialization.
+- V2 selects logical sectors 0..33 and the final 33, collapsing overlaps for tiny
+  geometries. Each is zeroed (encrypted with its actual logical LBA in encrypted
+  mode) and read back. Both initializing and ready headers retain verified writes
+  with ready markers last. Total normal-card work: 99 writes plus 99 readbacks,
+  not including CID commands. Setup progress counts 67 logical metadata sectors;
+  MSC capacity stays physical-16. No whole-card verification/zero-read guarantee.
+- GUI/CLI describe volume replacement, explicitly warn old plaintext can remain
+  recoverable, and instruct Windows QUICK-format THROUGH THE PILL after unlock.
+  No automatic formatting is implemented. No SPI/build optimization was changed;
+  fast setup does not claim faster ordinary file transfers.
+- Extended the simulator with bounded sparse backing for large cards and torn-write
+  injection. Ran `python tests/storage/test_fast_setup.py
+  build/storage-host/Debug/storage_sim.dll` and Release with
+  `PYTHONPATH=build/control-python;build/crypto-python`: both passed.
+- New coverage in both modes: 11 geometries including tiny overlaps, 8/64 GB and
+  UINT32_MAX; <=99 writes; first/tail ciphertext against independent Google reference;
+  unchanged old sectors and expected arbitrary decrypted bytes; full exposed
+  capacity; reset/reunlock and new-file integrity; all 99 write interruption points
+  and 35 torn-sector cases per mode; v1 full initialization/unlock compatibility.
+- Rebuilt/reran original storage regressions in Debug and Release: all groups passed,
+  including header corruption, card/key errors, binding power cuts and mode changes.
+  Ran GUI suites against both: all 10 tests passed, including large-card progress,
+  user-visible retention warning and quick-format instructions.
+- STM32 Debug/Release builds passed: Debug FLASH 86784 B / RAM 17816 B;
+  Release FLASH 39932 B / RAM 17816 B. Firmware flash limit 256 KiB; RAM 128 KiB.
+  Build commands remain `cmake --preset Debug/Release` and `cmake --build --preset
+  Debug/Release` using the pinned ST tools. No board was flashed.
+- Documentation: `Storage/FORMAT.md`, implementation plan, GUI/CLI instructions and
+  physical acceptance checklist now describe v2 and its changed guarantees.
+  Actual setup latency, Windows partition discovery/quick-formatting on reused
+  cards, and physical power-loss outcomes remain pending.
+- Rebuilt with `build/gui-venv/Scripts/python.exe tools/package_windows.py`; the
+  packaged hardware-free runtime smoke test passed. Updated EXE is
+  `build/dist/BlackPillDrive/BlackPillDrive.exe`; portable ZIP and SHA256 sidecar
+  are in `build/`. ZIP SHA256:
+  `3529514e9a47a7c7482139a2174c505ea915860201873722228747c9b2a35463`.
+  `git diff --check` passed. No physical flash/card operations were performed.
 
 ### Milestone 5, 2026-10-20
 

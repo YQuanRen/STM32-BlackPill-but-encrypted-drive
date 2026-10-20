@@ -116,7 +116,7 @@ class Service:
                 status = volume.status(client)
                 if (status['cid'], status['physical']) != (setup.cid, setup.physical):
                     raise bp.ProtocolError('Card changed during initialization. Reconnect and restart explicitly.')
-                if status['total'] != setup.physical - 16 or not last_done <= status['done'] <= status['total']:
+                if status['total'] != volume.setup_total(setup.physical) or not last_done <= status['done'] <= status['total']:
                     raise bp.ProtocolError('Invalid initialization progress. Reconnect and inspect the card.')
                 if status['done'] != last_done:
                     last_done, last_change = status['done'], time.monotonic()
@@ -125,7 +125,7 @@ class Service:
                 progress(status['done'], status['total'])
                 if status['state'] == 2:
                     if status['done'] != status['total']:
-                        raise bp.ProtocolError('Initialization did not cover the full volume.')
+                        raise bp.ProtocolError('Setup did not finish preparing partition metadata.')
                     break
                 if status['state'] != 1:
                     raise bp.ProtocolError('Initialization stopped. Keep the file; reconnect and restart setup.')

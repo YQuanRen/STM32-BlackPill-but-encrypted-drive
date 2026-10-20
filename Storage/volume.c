@@ -21,12 +21,23 @@ static int key_ok(const uint8_t h[256],const uint8_t key[32]) {
     uint8_t a[124],t[32];aad(h,a);bp_mac(key,"BP1/data-check",a,124,t);
     int ok=bp_equal(t,h+176,32);bp_wipe(t,32);return ok;
 }
+/* Format 1 initializes all sectors; format 2 only invalidates partition metadata.
+ * First 34 plus last 33, without double-writing overlaps on tiny cards. */
+static uint32_t setup_total(const bp_volume *v) {
+    uint32_t logical=v->physical-16;
+    return bp_u32(v->header+8)==2&&logical>67?67:logical;
+}
+static uint32_t setup_lba(const bp_volume *v,uint32_t index) {
+    uint32_t logical=v->physical-16;
+    if(bp_u32(v->header+8)!=2||logical<=67||index<34)return index;
+    return logical-33+(index-34);
+}
 static int valid(bp_volume *v,const uint8_t h[256],int proposal) {
     uint8_t mac[32],cid[16];uint32_t physical;
     bp_mac(v->journal->auth,"BP1/header",h,224,mac);
     if(!bp_equal(mac,h+224,32))return BP_HEADER;
     unsigned mode=bp_u32(h+80),state=bp_u32(h+12);
-    if(memcmp(h,"BPVOL001",8)||bp_u32(h+8)!=1||
+    if(memcmp(h,"BPVOL001",8)||(bp_u32(h+8)!=1&&bp_u32(h+8)!=2)||
        !bp_equal(h+16,v->journal->identity,16)||zero(h+32,16)||
        (mode!=1&&mode!=2)||bp_u32(h+84)!=512||!zero(h+208,16)||
        (state!=1&&state!=2))return BP_HEADER;
@@ -114,7 +125,8 @@ int bp_volume_command(void *user,unsigned operation,const uint8_t *p,size_t n,ui
         if(!describe(v,cid,&physical))return fail(v,BP_IO);
         if(v->state==1&&same_card(v))return BP_IO;
         out[0]=(uint8_t)v->state;out[1]=(uint8_t)v->mode;bp_put(out+2,v->done,4);
-        bp_put(out+6,physical-16,4);memcpy(out+10,cid,16);bp_put(out+26,physical,4);*outn=30;return BP_OK;
+        bp_put(out+6,v->physical>16?setup_total(v):physical-16,4);
+        memcpy(out+10,cid,16);bp_put(out+26,physical,4);*outn=30;return BP_OK;
     }
     if(p[0]==7) {
         if(n!=4||!p[3]||p[3]>128||bp_u16(p+1)>256u-p[3])return BP_FORMAT;
@@ -126,10 +138,11 @@ int bp_volume_command(void *user,unsigned operation,const uint8_t *p,size_t n,ui
 void bp_volume_step(bp_volume *v) {
     if(v->state!=1)return;
     if(same_card(v))return;
-    if(v->done<v->physical-16) {
+    if(v->done<setup_total(v)) {
+        uint32_t lba=setup_lba(v,v->done);
         memset(v->scratch,0,512);
-        if(v->mode==2&&adiantum_sector(&v->cipher,v->scratch,512,v->scratch,v->done,0)) {fail(v,BP_AUTH);return;}
-        if(write_verified(v,v->done+16,v->scratch))return;
+        if(v->mode==2&&adiantum_sector(&v->cipher,v->scratch,512,v->scratch,lba,0)) {fail(v,BP_AUTH);return;}
+        if(write_verified(v,lba+16,v->scratch))return;
         v->done++;return;
     }
     if(headers_write(v,2))return;

@@ -3,6 +3,11 @@
 #include <string.h>
 #define SECTORS 64
 static uint8_t flash[2][BP_BANK_SIZE],disk[SECTORS][512];
+/* Sparse backing for large-card tests; absent sectors contain old plaintext. */
+static uint8_t extra[256][512];
+static uint32_t extra_lba[256];
+static unsigned extra_count;
+static int torn=-1;
 static bp_journal j;
 static bp_control c;
 static bp_volume v;
@@ -15,11 +20,19 @@ static int fr(void *u,unsigned b,size_t o,void *p,size_t n){(void)u;memcpy(p,fla
 static int fp(void *u,unsigned b,size_t o,const void *p,size_t n){(void)u;const uint8_t *s=p;for(size_t i=0;i<n;i++){if(flash_cut==0)return 0;if(flash_cut>0)flash_cut--;flash[b][o+i]&=s[i];}return 1;}
 static int fe(void *u,unsigned b){(void)u;memset(flash[b],255,BP_BANK_SIZE);return 1;}
 static int describe(void *u,uint8_t *p,uint32_t *n){(void)u;memcpy(p,cid,16);*n=capacity;return present;}
-static int dr(void *u,uint32_t a,uint8_t *p){(void)u;reads++;if(!present||rd_fail||a>=SECTORS)return 0;memcpy(p,disk[a],512);return 1;}
-static int dw(void *u,uint32_t a,const uint8_t *p){(void)u;if(!present||cut==0||a>=SECTORS)return 0;if(cut>0)cut--;writes++;memcpy(disk[a],p,512);if(corrupt_write)disk[a][99]^=1;return 1;}
+static uint8_t *sector(uint32_t a,int create){
+    if(a<SECTORS)return disk[a];
+    for(unsigned i=0;i<extra_count;i++)if(extra_lba[i]==a)return extra[i];
+    if(!create||extra_count==256)return NULL;
+    unsigned i=extra_count++;extra_lba[i]=a;memset(extra[i],0xa5,512);return extra[i];
+}
+static int dr(void *u,uint32_t a,uint8_t *p){(void)u;reads++;if(!present||rd_fail||a>=capacity)return 0;uint8_t *s=sector(a,0);if(s)memcpy(p,s,512);else memset(p,0xa5,512);return 1;}
+static int dw(void *u,uint32_t a,const uint8_t *p){(void)u;if(!present||a>=capacity)return 0;uint8_t *s=sector(a,1);if(!s)return 0;if(cut==0){if(torn>=0)memcpy(s,p,(unsigned)torn);return 0;}if(cut>0)cut--;writes++;memcpy(s,p,512);if(corrupt_write)s[99]^=1;return 1;}
 static void clear(void *u){bp_volume_reset(u);}
 int sim_boot(void){bp_flash f={0,fr,fp,fe};bp_disk d={0,describe,dr,dw};int r=bp_journal_boot(&j,&f,identity);bp_volume_init(&v,&j,&d);bp_control_init(&c,&j,bp_volume_authorize,&v);c.storage=bp_volume_command;c.clear_user=clear;return r;}
-void sim_fresh(void){memset(flash,255,sizeof(flash));memset(disk,0xa5,sizeof(disk));memset(cid,0x31,16);cut=flash_cut=-1;capacity=SECTORS;rd_fail=corrupt_write=writes=reads=now=0;present=1;sim_boot();}
+void sim_fresh(void){memset(flash,255,sizeof(flash));memset(disk,0xa5,sizeof(disk));memset(cid,0x31,16);cut=flash_cut=torn=-1;extra_count=0;capacity=SECTORS;rd_fail=corrupt_write=writes=reads=now=0;present=1;sim_boot();}
+void sim_torn(int n){torn=n>=0&&n<512?n:-1;}
+void sim_raw_sector(uint32_t a,void *p){uint8_t *s=sector(a,0);if(s)memcpy(p,s,512);else memset(p,0xa5,512);}
 void sim_geometry(uint32_t n){capacity=n;}
 void sim_flash_cut(int n){flash_cut=n;}
 size_t sim_request(const uint8_t *p,size_t n,uint8_t *o){return bp_control_request(&c,p,n,o,now);}

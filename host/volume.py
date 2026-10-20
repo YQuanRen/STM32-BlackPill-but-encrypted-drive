@@ -1,4 +1,4 @@
-"""Version-1 authenticated volume metadata and password/file key wrapping."""
+"""Authenticated volume metadata: v1 full initialization, v2 fast setup."""
 import hashlib
 import hmac
 import secrets
@@ -23,7 +23,7 @@ def validate(h, identity, auth, ready=True):
         raise ProtocolError('Header authentication failed')
     version,state=struct.unpack_from('<II',h,8)
     physical,logical,mode,sector=struct.unpack_from('<QQII',h,64)
-    if (h[:8]!=b'BPVOL001' or version!=1 or state!=(2 if ready else 1) or
+    if (h[:8]!=b'BPVOL001' or version not in (1,2) or state!=(2 if ready else 1) or
         h[16:32]!=identity or h[32:48]==bytes(16) or mode not in (1,2) or sector!=512 or
         not 16<physical<=2**32-1 or logical!=physical-16 or any(h[208:224])):
         raise ProtocolError('Invalid volume metadata')
@@ -32,11 +32,15 @@ def validate(h, identity, auth, ready=True):
         raise ProtocolError('Unsupported password KDF parameters')
     return mode
 
-def build(identity, root, mode, cid, physical, password=None):
+def setup_total(physical, version=2):
+    return min(physical-16,67) if version==2 else physical-16
+
+def build(identity, root, mode, cid, physical, password=None, *, version=2):
     if len(identity)!=16 or len(cid)!=16 or mode not in (1,2) or not 16<physical<=2**32-1:
         raise ProtocolError('Invalid setup target')
+    if version not in (1,2):raise ProtocolError('Unsupported setup format')
     auth,_=file_keys(root,identity)
-    h=bytearray(256);h[:8]=b'BPVOL001';struct.pack_into('<II',h,8,1,1)
+    h=bytearray(256);h[:8]=b'BPVOL001';struct.pack_into('<II',h,8,version,1)
     h[16:32]=identity;h[32:48]=secrets.token_bytes(16);h[48:64]=cid
     struct.pack_into('<QQII',h,64,physical,physical-16,mode,512)
     key=bytes(32)

@@ -1,4 +1,4 @@
-"""BlackPill setup/unlock CLI. Setup erases the explicitly confirmed SD card."""
+"""BlackPill setup/unlock CLI. Fast setup replaces the volume; it does not erase old data."""
 import argparse
 import hashlib
 import hmac
@@ -203,7 +203,8 @@ def main():
             chosen=1 if args.mode=='auth' else 2
             card=volume.status(client)
             print(f"Device {identity.hex()} | Card {card['cid'].hex()} | {card['physical']*512} bytes | Mode {args.mode}")
-            print('Initialization destroys existing files. Back up first. Keep the authentication file on another drive.')
+            print('Fast setup replaces the volume. Back up first; old data in untouched sectors is NOT erased.')
+            print('Keep the authentication file on another drive. After setup, quick-format through the Black Pill.')
             phrase=f"ERASE {identity.hex()} {card['cid'].hex()}"
             if input(f'Type {phrase} to initialize: ').strip()!=phrase:raise ProtocolError('Initialization cancelled')
             password=None
@@ -218,14 +219,14 @@ def main():
             volume.start_setup(client,h,key)
             while True:
                 progress=volume.status(client)
-                print(f"\rInitializing {progress['done']}/{progress['total']} sectors",end='',flush=True)
+                print(f"\rPreparing metadata {progress['done']}/{progress['total']} sectors",end='',flush=True)
                 if progress['state']==2:break
                 if progress['state']!=1:raise ProtocolError('Initialization failed; explicit restart is required')
                 time.sleep(0.2)
             print();client.authenticate(identity,chosen,auth)
             volume.read_header(client,identity,auth)
             client.exchange(5,b'\x02' if chosen==1 else b'\x03'+key,secure=True)
-            print('Initialized and unlocked. Use Windows to format the drive, then restore your files.');return
+            print('Fast setup complete and unlocked. Use Windows Disk Management to create a volume and QUICK-format through the Black Pill, then restore files.');return
         if args.command=='unlock':
             h=volume.read_header(client,identity,auth)
             actual=volume.validate(h,identity,auth)
