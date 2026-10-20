@@ -23,6 +23,7 @@
  */
 
 #include "inner.h"
+#include "crypto.h"
 
 static inline size_t
 block_size(const br_hash_class *dig)
@@ -50,6 +51,7 @@ process_key(const br_hash_class **hc, void *ks,
 	(*hc)->init(hc);
 	(*hc)->update(hc, tmp, blen);
 	(*hc)->state(hc, ks);
+	bp_wipe(tmp, sizeof(tmp));
 }
 
 /* see bearssl.h */
@@ -71,6 +73,8 @@ br_hmac_key_init(br_hmac_key_context *kc,
 	}
 	process_key(&hc.vtable, kc->ksi, key, key_len, 0x36);
 	process_key(&hc.vtable, kc->kso, key, key_len, 0x5C);
+	bp_wipe(&hc, sizeof(hc));
+	bp_wipe(kbuf, sizeof(kbuf));
 }
 
 /* see bearssl.h */
@@ -118,5 +122,7 @@ br_hmac_out(const br_hmac_context *ctx, void *out)
 	dig->update(&hc.vtable, tmp, hlen);
 	dig->out(&hc.vtable, tmp);
 	memcpy(out, tmp, ctx->out_len);
+	bp_wipe(&hc, sizeof(hc));
+	bp_wipe(tmp, sizeof(tmp));
 	return ctx->out_len;
 }

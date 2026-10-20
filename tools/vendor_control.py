@@ -17,3 +17,35 @@ for file in files:
     target = dest / file
     target.parent.mkdir(parents=True,exist_ok=True)
     shutil.copyfile(src/file,target)
+
+# Keep algorithms unchanged; erase explicit key/keystream scratch arrays.
+# Compiler spills/register copies are still outside this best-effort guarantee.
+patches = {
+    'src/symcipher/aes_ct_ctr.c': [
+        ('\t\t\tbreak;', '\t\t\tbp_wipe(q, sizeof(q));\n\t\t\tbp_wipe(tmp, sizeof(tmp));\n\t\t\tbreak;'),
+        ('\t\tcc += 2;', '\t\tcc += 2;\n\t\tbp_wipe(q, sizeof(q));\n\t\tbp_wipe(tmp, sizeof(tmp));'),
+        ('\treturn cc;', '\tbp_wipe(sk_exp, sizeof(sk_exp));\n\treturn cc;'),
+    ],
+    'src/mac/hmac.c': [
+        ('\t(*hc)->state(hc, ks);', '\t(*hc)->state(hc, ks);\n\tbp_wipe(tmp, sizeof(tmp));'),
+        ('\tprocess_key(&hc.vtable, kc->kso, key, key_len, 0x5C);',
+         '\tprocess_key(&hc.vtable, kc->kso, key, key_len, 0x5C);\n\tbp_wipe(&hc, sizeof(hc));\n\tbp_wipe(kbuf, sizeof(kbuf));'),
+        ('\treturn ctx->out_len;', '\tbp_wipe(&hc, sizeof(hc));\n\tbp_wipe(tmp, sizeof(tmp));\n\treturn ctx->out_len;'),
+    ],
+    'src/kdf/hkdf.c': [
+        ('\thc->dig_len = br_hmac_size(&hc->u.hmac_ctx);',
+         '\thc->dig_len = br_hmac_size(&hc->u.hmac_ctx);\n\tbp_wipe(&kc, sizeof(kc));\n\tbp_wipe(tmp, sizeof(tmp));'),
+        ('\thc->chunk_num = 0;', '\thc->chunk_num = 0;\n\tbp_wipe(tmp, sizeof(tmp));'),
+        ('\t\t\tbr_hmac_out(&hmac_ctx, hc->buf);',
+         '\t\t\tbr_hmac_out(&hmac_ctx, hc->buf);\n\t\t\tbp_wipe(&hmac_ctx, sizeof(hmac_ctx));'),
+    ],
+}
+for name, replacements in patches.items():
+    target = dest/name
+    text = target.read_text()
+    text = text.replace('#include "inner.h"', '#include "inner.h"\n#include "crypto.h"')
+    for old, new in replacements:
+        if text.count(old) != 1:
+            raise SystemExit(f'Adaptation no longer matches upstream: {name}')
+        text = text.replace(old,new)
+    target.write_text(text)

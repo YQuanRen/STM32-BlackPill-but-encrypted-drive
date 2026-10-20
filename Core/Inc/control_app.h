@@ -10,4 +10,7 @@ void BP_GetReport(uint8_t[64]);
 int BP_MediaReady(void);
 int BP_MediaAttention(void);
 void BP_StorageFault(void);
+uint32_t BP_StorageCapacity(void);
+int BP_StorageRead(uint32_t,uint8_t *,uint16_t);
+int BP_StorageWrite(uint32_t,const uint8_t *,uint16_t);
 #endif

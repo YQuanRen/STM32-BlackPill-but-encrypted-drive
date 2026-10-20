@@ -1,4 +1,4 @@
-"""Milestone-3 development CLI. Never initializes or writes an SD card."""
+"""BlackPill setup/unlock CLI. Setup erases the explicitly confirmed SD card."""
 import argparse
 import hashlib
 import hmac
@@ -8,6 +8,8 @@ from pathlib import Path
 import secrets
 import struct
 import time
+import getpass
+import sys
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -66,7 +68,8 @@ class Client:
         if data[0]:
             names = {1:'Malformed request',2:'Wrong device state',3:'Authentication failed',
                      4:'Challenge expired',5:'Credential flash fault',
-                     6:'Storage setup/integration requires milestone 4'}
+                     6:'Unsupported operation',7:'SD card I/O failed; reconnect and inspect the card',
+                     8:'Missing, corrupt, mismatched or uninitialized volume header',9:'Storage is busy'}
             raise ProtocolError(names.get(data[0], 'Device rejected request'))
         return data[1:]
 
@@ -159,7 +162,7 @@ def save_file(path, identity, root, mode):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=['list','info','enroll','auth','unlock'])
+    p.add_argument('command',choices=['list','info','enroll','auth','unlock','setup','status'])
     p.add_argument('--device',help='exact 32-hex-digit identity from list')
     p.add_argument('--file',help='authentication file on another drive; keep a backup')
     p.add_argument('--mode',choices=['auth','encrypted'])
@@ -180,24 +183,68 @@ def main():
         if args.command=='info':print(json.dumps(info));return
         if not args.file: raise ProtocolError('--file is required')
         identity=bytes.fromhex(info['device'])
-        if args.command=='enroll' and not Path(args.file).exists():
+        if args.command in ('enroll','setup') and not Path(args.file).exists():
             if info['state']!=0 or not args.mode:raise ProtocolError('New enrollment needs a virgin device and --mode')
             mode=1 if args.mode=='auth' else 2
             root=secrets.token_bytes(32);save_file(args.file,identity,root,mode)
         fid,root,mode=load_file(args.file)
         if fid!=identity:raise ProtocolError('File belongs to another device')
-        if args.mode and mode!=(1 if args.mode=='auth' else 2):raise ProtocolError('Mode does not match saved file')
+        if args.command=='enroll' and args.mode and mode!=(1 if args.mode=='auth' else 2):raise ProtocolError('Mode does not match saved file')
         auth,_=file_keys(root,identity)
-        if args.command=='enroll' and info['state']==0:client.enroll(identity,mode,auth)
-        client.authenticate(identity,mode,auth);client.ping()
+        if args.command in ('enroll','setup') and info['state']==0:
+            client.enroll(identity,mode,auth);info=client.info()
+        mode=info['mode'] # Enrollment file's mode is a hint, never the current policy.
+        client.authenticate(identity,mode,auth,2 if args.command=='setup' else 1);client.ping()
+        import volume
+        if args.command=='status':
+            state=volume.status(client);state['cid']=state['cid'].hex();print(json.dumps(state));return
+        if args.command=='setup':
+            if not args.mode:raise ProtocolError('Setup requires --mode auth or encrypted')
+            chosen=1 if args.mode=='auth' else 2
+            card=volume.status(client)
+            print(f"Device {identity.hex()} | Card {card['cid'].hex()} | {card['physical']*512} bytes | Mode {args.mode}")
+            print('Initialization destroys existing files. Back up first. Keep the authentication file on another drive.')
+            phrase=f"ERASE {identity.hex()} {card['cid'].hex()}"
+            if input(f'Type {phrase} to initialize: ').strip()!=phrase:raise ProtocolError('Initialization cancelled')
+            password=None
+            if chosen==2:
+                password=getpass.getpass('New password: ')
+                if password!=getpass.getpass('Confirm password: '):raise ProtocolError('Passwords do not match')
+            # User input may take >60s: start a new authenticated setup session.
+            client.authenticate(identity,mode,auth,2)
+            latest=volume.status(client)
+            if (latest['cid'],latest['physical'])!=(card['cid'],card['physical']):raise ProtocolError('Card changed after confirmation')
+            h,key=volume.build(identity,root,chosen,card['cid'],card['physical'],password)
+            volume.start_setup(client,h,key)
+            while True:
+                progress=volume.status(client)
+                print(f"\rInitializing {progress['done']}/{progress['total']} sectors",end='',flush=True)
+                if progress['state']==2:break
+                if progress['state']!=1:raise ProtocolError('Initialization failed; explicit restart is required')
+                time.sleep(0.2)
+            print();client.authenticate(identity,chosen,auth)
+            volume.read_header(client,identity,auth)
+            client.exchange(5,b'\x02' if chosen==1 else b'\x03'+key,secure=True)
+            print('Initialized and unlocked. Use Windows to format the drive, then restore your files.');return
         if args.command=='unlock':
-            if mode==2:raise ProtocolError('Encrypted key unwrapping requires milestone 4')
-            client.exchange(5,b'\x02',secure=True)
-        print('Authenticated. Milestone 3 keeps SD media unavailable until milestone 4 setup.')
+            h=volume.read_header(client,identity,auth)
+            actual=volume.validate(h,identity,auth)
+            if actual!=mode:raise ProtocolError('Volume mode differs from authenticated device mode')
+            if mode==2:
+                password=getpass.getpass('Password: ')
+                key=volume.unwrap(h,identity,root,password)
+                client.authenticate(identity,mode,auth)
+                if volume.read_header(client,identity,auth)!=h:raise ProtocolError('Card changed while entering password')
+                client.exchange(5,b'\x03'+key,secure=True)
+            else:client.exchange(5,b'\x02',secure=True)
+            print('Unlocked. Safely eject in Windows before unplugging.');return
+        print('Authenticated. Use setup for first use, or unlock for an initialized volume.')
     finally:
         for wire,_,_ in selected:wire.close()
 
 if __name__=='__main__':
+    # volume imports these helpers: retain one ProtocolError class when run as a script.
+    sys.modules['bpctl']=sys.modules[__name__]
     try:main()
-    except (ProtocolError,OSError,ValueError,KeyError,TypeError) as exc:
+    except (ProtocolError,OSError,ValueError,KeyError,TypeError,EOFError) as exc:
         raise SystemExit(f'Error: {exc}')

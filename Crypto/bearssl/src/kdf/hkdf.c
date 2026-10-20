@@ -23,6 +23,7 @@
  */
 
 #include "inner.h"
+#include "crypto.h"
 
 const unsigned char br_hkdf_no_salt = 0;
 
@@ -42,6 +43,8 @@ br_hkdf_init(br_hkdf_context *hc, const br_hash_class *digest_vtable,
 	br_hmac_key_init(&kc, digest_vtable, salt, salt_len);
 	br_hmac_init(&hc->u.hmac_ctx, &kc, 0);
 	hc->dig_len = br_hmac_size(&hc->u.hmac_ctx);
+	bp_wipe(&kc, sizeof(kc));
+	bp_wipe(tmp, sizeof(tmp));
 }
 
 /* see bearssl_kdf.h */
@@ -62,6 +65,7 @@ br_hkdf_flip(br_hkdf_context *hc)
 		br_hmac_get_digest(&hc->u.hmac_ctx), tmp, hc->dig_len);
 	hc->ptr = hc->dig_len;
 	hc->chunk_num = 0;
+	bp_wipe(tmp, sizeof(tmp));
 }
 
 /* see bearssl_kdf.h */
@@ -91,6 +95,7 @@ br_hkdf_produce(br_hkdf_context *hc,
 			br_hmac_update(&hmac_ctx, info, info_len);
 			br_hmac_update(&hmac_ctx, &x, 1);
 			br_hmac_out(&hmac_ctx, hc->buf);
+			bp_wipe(&hmac_ctx, sizeof(hmac_ctx));
 			hc->ptr = 0;
 		}
 		clen = hc->dig_len - hc->ptr;

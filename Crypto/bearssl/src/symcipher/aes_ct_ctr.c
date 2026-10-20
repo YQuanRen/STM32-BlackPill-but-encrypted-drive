@@ -23,6 +23,7 @@
  */
 
 #include "inner.h"
+#include "crypto.h"
 
 /* see bearssl_block.h */
 void
@@ -93,13 +94,18 @@ br_aes_ct_ctr_run(const br_aes_ct_ctr_keys *ctx,
 			if (len > 16) {
 				cc ++;
 			}
+			bp_wipe(q, sizeof(q));
+			bp_wipe(tmp, sizeof(tmp));
 			break;
 		}
 		xorbuf(buf, tmp, 32);
 		buf += 32;
 		len -= 32;
 		cc += 2;
+		bp_wipe(q, sizeof(q));
+		bp_wipe(tmp, sizeof(tmp));
 	}
+	bp_wipe(sk_exp, sizeof(sk_exp));
 	return cc;
 }
 

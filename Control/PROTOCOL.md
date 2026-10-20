@@ -1,4 +1,4 @@
-# BlackPill control protocol 1 (milestone 3 development format)
+# BlackPill control protocol 1 (milestones 3-4 development format)
 
 This is a versioned development protocol, not TLS or a production USB identity.
 All integers are little-endian except GCM's internal algorithm. Identity is the
@@ -11,8 +11,8 @@ The host generates a 32-byte OS-random root and saves a version-1 JSON file
 containing `device` (16-byte hex), `root` (32-byte hex), and `mode` (1 auth-only,
 2 encrypted), before sending enrollment. HKDF-SHA256 uses identity as salt,
 root as IKM, and distinct ASCII info `BP1/file-auth` and `BP1/file-wrap`, each
-32-byte output. Only file-auth is sent/stored on the board. File-wrap is reserved
-for milestone 4. Initial enrollment assumes a trusted USB connection. It is
+32-byte output. Only file-auth is sent/stored on the board. File-wrap participates
+in password/data-key wrapping (Storage/FORMAT.md). Initial enrollment assumes a trusted USB connection. It is
 permitted only on completely erased credential flash. Nonblank invalid flash
 is FAULT, never a new device. No USB reset/unenroll/credential replacement exists.
 Interrupted enrollment can be retried by authenticating with the already saved
@@ -75,13 +75,15 @@ persists independently until reset/disconnect/fatal storage failure; protocol
 errors cannot live-lock an already mounted disk. No lock command exists.
 
 Protected plaintext commands: PING=1 (no body), AUTHORIZE=2 (auth-only, operation
-unlock), INSTALL_KEY=3 (encrypted, operation unlock, 32-byte key), SETUP=4
-(operation setup). Responses: status[1] and optional payload (PING `BP1`).
+unlock), INSTALL_KEY=3 (encrypted, operation unlock, 32-byte key), STAGE=4,
+COMMIT=5, STATUS=6 and HEADER=7 (specified in Storage/FORMAT.md).
+Responses: status[1] and optional payload (PING `BP1`).
 AUTHORIZE/INSTALL_KEY call the storage-policy hook; only successful validation
-sets the media gate. The milestone-3 board hook returns NEEDS_INITIALIZATION
-for both modes and wipes supplied key material. SETUP is also unsupported until
-milestone 4 implements authenticated headers and destructive initialization.
-Host simulation substitutes a controlled storage hook to test these transitions.
+sets the media gate. The board validates both ready headers, journal binding,
+live card identity/geometry and the encrypted-mode data-key verification HMAC.
+Setup requires operation 2 and locked media; completion does not open media.
+Additional errors: 7 SD failure, 8 invalid header, 9 busy; 6 means unsupported.
+Control-only tests mock authorization; storage tests use the real volume layer.
 
 ## Freshness, persistence and reset
 
@@ -89,11 +91,14 @@ STM32F411CE sectors 6 and 7 are reserved: 08040000..0805FFFF and
 08060000..0807FFFF (128 KiB each). Firmware linker region ends at 08040000.
 Source: ST [RM0383, flash organization](https://www.st.com/resource/en/reference_manual/dm00119316-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf).
 
-Each 128-byte append record: magic `BPJ1`[4], format u32=1, identity[16],
-auth[32], mode u32, epoch u64 (offset 60), reserved zero[24] (offset 68),
+Each 128-byte append record: magic `BPJ1`[4], format u32=2, identity[16],
+auth[32], mode u32, epoch u64 (offset 60), volume ID[16] (offset 68), zero[8],
 SHA256(bytes 0..91)[32], commit u32=0 (offset 124, written last). Fields are
 explicitly serialized; digest detects accidental corruption, not invasive edits.
 Select highest valid epoch; conflicting equal epochs/credentials are a fault.
+Version-1 records with zero bytes 68..91 remain readable as unbound volumes.
+New records use version 2. Auth/identity are immutable; authenticated setup appends
+a new mode/volume binding before SD writes, as specified in Storage/FORMAT.md.
 On provisioned power boot, append/verify epoch+1 *before* USB challenges can run.
 Enrollment commits epoch 1. Incomplete records with erased commit are skipped,
 never overwritten. Invalid committed/torn-commit records fail closed. Epoch or
@@ -111,7 +116,10 @@ USB bus reset/deconfigure/disconnect immediately closes the media gate, discards
 transport state and schedules session/key-buffer wiping in the main loop. It
 does not reset the epoch or challenge counter. Generation checks prevent a
 request interrupted by USB reset from publishing a response or reopening media.
-Suspend/resume preserves the session. Flash and cryptographic work run in the
-main loop; USB callbacks only copy bounded reports. Flash programming can stall
+Suspend/resume preserves the session. Setup, control crypto and flash run in the
+main loop; HID callbacks only copy bounded reports. MSC sector crypto/SD I/O run
+in the existing USB callback path. SysTick priority 0 preempts USB priority 1 so
+SD timeouts advance; preserve these priorities on CubeMX regeneration. Disk
+callbacks reject I/O after a reset generation change. Flash programming can stall
 single-bank instruction fetch; host timeouts allow for this and hardware USB
 behavior remains to be measured. No epoch is allocated on enumeration resets.

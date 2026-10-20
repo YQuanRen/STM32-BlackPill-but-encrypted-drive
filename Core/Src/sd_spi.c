@@ -7,6 +7,7 @@
 #define SD_CMD1    1U
 #define SD_CMD8    8U
 #define SD_CMD9    9U
+#define SD_CMD10   10U
 #define SD_CMD16   16U
 #define SD_CMD17   17U
 #define SD_CMD24   24U
@@ -348,6 +349,13 @@ bool SD_SPI_IsReady(void)
 uint32_t SD_SPI_GetBlockCount(void)
 {
   return sd_block_count;
+}
+
+bool SD_SPI_GetCardID(uint8_t cid[16])
+{
+  if (!sd_ready || cid == NULL) return false;
+  if (!SD_SPI_ReadRegister(SD_CMD10, cid, 16)) { sd_ready = false; return false; }
+  return true;
 }
 
 bool SD_SPI_ReadBlocks(uint32_t first_block, uint8_t *data, uint16_t block_count)

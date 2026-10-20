@@ -1,0 +1,99 @@
+# Volume format 1 and milestone-4 transaction
+
+All integers are little-endian. Physical sectors 0..7 and 8..15 are identical
+4096-byte headers. The first 256 bytes have the layout below; all remaining bytes
+must be zero. Both copies must authenticate and match exactly: no automatic repair
+or fallback to an older copy. Logical sector L maps to physical L+16 in BOTH modes.
+Cards with <=16 sectors, missing cards, mismatched CID/geometry, corrupt/inconsistent
+headers and uninitialized volumes stay locked. CID binding detects ordinary card
+swaps; it is not a defense against hardware that spoofs a CID.
+
+| Offset | Length | Field |
+| --- | --- | --- |
+| 0 | 8 | ASCII BPVOL001 |
+| 8 | 4 | format 1 |
+| 12 | 4 | state: 1 initializing, 2 ready |
+| 16 | 16 | device identity |
+| 32 | 16 | random volume ID |
+| 48 | 16 | SD CID |
+| 64 | 8 | physical sector count (17..UINT32_MAX) |
+| 72 | 8 | logical sector count = physical - 16 |
+| 80 | 4 | mode: 1 plaintext, 2 Adiantum |
+| 84 | 4 | sector size 512 |
+| 88,92,96 | 4 each | Argon2id memory KiB, iterations, parallelism |
+| 100 | 16 | password salt |
+| 116 | 12 | wrapping GCM nonce |
+| 128 | 48 | wrapped 32-byte key + 16-byte GCM tag |
+| 176 | 32 | data-key verification HMAC |
+| 208 | 16 | reserved zeros |
+| 224 | 32 | HMAC(file-auth, ASCII BP1/header || bytes 0..223) |
+
+Auth-only mode requires bytes 88..207 to be zero. Encryption requires exactly
+Argon2id version 19, 65536 KiB, 3 iterations, parallelism 1, output 32 bytes.
+Host checks HMAC, identity, sizes and these fixed parameters BEFORE running KDF.
+Passwords are UTF-8, no normalization; nonempty, max 1024 encoded bytes. Salt,
+volume ID, data key and nonce are newly generated using OS randomness each setup.
+
+AAD = header[0:12] || header[16:128] (124 bytes; excludes mutable state).
+PW = Argon2id(password, salt). WRAP_FILE is the independently derived wrapping
+secret from the root authentication file (Control/PROTOCOL.md).
+KEK = HKDF-SHA256(IKM=PW || WRAP_FILE,
+salt=SHA256(ASCII BP1/wrap-salt || deviceID || volumeID), info=ASCII BP1/data-wrap).
+Wrapped key = AES256-GCM(KEK, nonce, dataKey, AAD).
+Key check = HMAC-SHA256(dataKey, ASCII BP1/data-check || AAD).
+The board checks this value before installing any received key. Knowledge of the
+board's file-auth secret does not provide WRAP_FILE or replace the password.
+
+## Transaction and journal
+
+Journal format 2 retains the 128-byte record layout, uses bytes 68..83 for volume
+ID and leaves 84..91 zero. Version-1 records are read as an unbound volume (zero
+ID); the next append uses version 2. Identity/auth stay immutable; mode and volume
+are taken from the highest committed epoch. A mode/binding update appends a new
+epoch with the existing auth secret. No root secret or plaintext data key is stored.
+
+An authenticated operation-2 session stages header[256] || dataKey[32] in ordered
+chunks (key is all zero in auth-only mode). COMMIT revalidates HMAC, device, live
+CID/capacity, new nonzero volume ID, state=initializing and data-key check. It then
+commits the new mode/volume binding to MCU flash BEFORE touching SD data. From that
+point, old headers cannot unlock even if setup fails. It writes and verifies both
+initializing headers, then processes one logical sector per main-loop step: zeros
+in mode 1 or Adiantum-encrypted zeros in mode 2. Every write is read back and compared.
+Only after every sector succeeds are both ready headers written and verified.
+Each header phase verifies padding sectors 1..7 and 9..15 first, then writes and
+verifies state-bearing sectors 0 and 8 last. A cut before the last ready marker
+leaves at least one initializing copy, which normal unlock rejects.
+MSC stays unavailable throughout. Completion clears expanded key state and remains
+locked until a fresh operation-1 session authorizes/installs the validated key.
+
+Any reset, SD error or card swap stops work and clears volatile key/staging state.
+Interrupted setup never resumes: explicit new setup generates a new volume/key and
+restarts all exposed sectors. If power fails before the journal commit, no SD write
+has happened and the old volume remains usable. If it fails afterward, explicit
+restart is required. Flash corruption follows the conservative fault policy in
+Control/PROTOCOL.md. Reinitialization/mode changes require the existing file; no
+credential rotation or live locking of mounted disks is implemented.
+
+## Protected control additions
+
+All operations use existing AES-GCM SECURE messages and counters. Storage commands
+are rejected while media is mounted; setup commands require operation-2 sessions.
+
+| Plaintext opcode | Request body after opcode | Response after encrypted status |
+| --- | --- | --- |
+| 4 STAGE | offset u16, 1..128 bytes (sequential, total 288) | empty |
+| 5 COMMIT | empty | empty (initialization started) |
+| 6 STATUS | empty | state u8, mode u8, done u32, logical total u32, CID[16], physical count u32 |
+| 7 HEADER | offset u16, length u8 (1..128, within 256) | header slice |
+
+STATUS states: 0 no validated volume, 1 initializing, 2 ready/locked, 3 fault.
+Error statuses add 7 SD failure, 8 invalid/missing header, 9 busy.
+HEADER validates both complete copies against the current journal/card before
+returning slices. STATUS/HEADER are authenticated. The file's saved mode is only
+an enrollment hint; current mode comes from the authenticated transcript and header.
+
+The CLI prints exact device identity, CID, physical capacity and chosen mode and
+requires typing `ERASE <deviceID> <CID>` before sending STAGE/COMMIT. No development
+test authorizes physical card writes. Safe Windows ejection followed by unplug is
+still required. Adiantum does not authenticate sectors; accessible-sector zeroing
+does not guarantee sanitization of remapped flash cells.

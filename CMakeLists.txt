@@ -34,9 +34,10 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
-# Standalone crypto compilation only; storage integration is milestone 4.
+# Shared pinned primitives, authenticated control and sector storage.
 add_subdirectory(Crypto)
 add_subdirectory(Control)
+add_subdirectory(Storage)
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
@@ -71,6 +72,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
     bp_control
+    bp_storage
 
     # Add user defined libraries
 )

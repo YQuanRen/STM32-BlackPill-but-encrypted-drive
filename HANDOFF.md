@@ -1,12 +1,12 @@
 # Implementation handoff
 
-Updated: 2026-10-17 (Asia/Singapore).
+Updated: 2026-10-20 (Asia/Singapore).
 
 ## Start here
 
 Read IMPLEMENTATION_PLAN.md before making changes. It is the source of truth for the agreed workflow, security boundaries, technical defaults and open engineering questions. Check `git status --short` and applicable repository instructions at the start of each session. Preserve unrelated user work.
 
-The current request authorized milestone 2 implementation and tests. Standalone Adiantum is now implemented and validated on the host and compiled/linked for Cortex-M4. No physical device was accessed. Continue with milestone 3 when requested.
+Milestone 5 GUI and Windows packaging are implemented; software tests pass. The portable EXE/ZIP is under `build/`, with instructions in `host/WINDOWS.md`. Physical acceptance is still pending, so milestone 5 is not fully hardware-validated. No physical device was accessed or flashed and no connected SD card was modified. Flashing alone does not encrypt an existing card: explicitly initialize in encrypted mode first.
 
 ## Milestone status
 
@@ -14,9 +14,9 @@ The current request authorized milestone 2 implementation and tests. Standalone 
 | --- | --- | --- |
 | 1 | Save specification and handoff | Complete: IMPLEMENTATION_PLAN.md and this file |
 | 2 | Standalone Adiantum library and tests | Complete: host Debug/Release vectors and API tests pass; target Debug/Release builds and link smoke pass |
-| 3 | Composite USB control, provisioning and authentication | Not started |
-| 4 | Both storage modes, headers and initialization | Not started |
-| 5 | Windows desktop utility and end-to-end validation | Not started |
+| 3 | Composite USB control, provisioning and authentication | Software implemented and host/target-build tests passed; physical enumeration and flash validation pending |
+| 4 | Both storage modes, headers and initialization | Software complete; Debug/Release integration/fault tests and firmware builds pass; hardware validation pending |
+| 5 | Windows desktop utility and end-to-end validation | GUI, portable package and software tests complete; fresh-machine/physical acceptance pending |
 
 ## Decisions that must survive context loss
 
@@ -33,38 +33,103 @@ The current request authorized milestone 2 implementation and tests. Standalone 
 
 ## Current implementation and inspection evidence
 
-Firmware is still the existing plaintext USB MSC-to-SPI-SD bridge. `USB_DEVICE/App/usbd_storage_if.c` directly calls SD_SPI read/write; `usb_device.c` registers MSC only. Block size is 512 bytes; target is STM32F411 with 512 KB flash and 128 KB RAM. Debug/Release CMake presets and ST tool bundles already exist.
+Firmware starts locked with composite MSC/HID. Production authorization validates both ready headers, durable volume/mode binding, card CID/capacity and the encrypted-mode key check. MSC maps logical LBA to physical LBA+16 and encrypts/decrypts each 512-byte encrypted-mode sector using Adiantum; auth-only data stays plaintext. Initialization writes/verifies every accessible sector before committing ready headers. Target remains STM32F411 with 128 KiB RAM; firmware occupies the first 256 KiB flash, journal sectors 6/7 the remaining 256 KiB. The linker reserves 8 KiB minimum stack, not a measured runtime guarantee.
 
-At milestone 2 start, IMPLEMENTATION_PLAN.md and HANDOFF.md were untracked; other tracked files were clean. No applicable AGENTS.md was found. These documents remain untracked (nothing was committed). Unrelated work was preserved.
+At milestone 2 start, IMPLEMENTATION_PLAN.md and HANDOFF.md were untracked; other tracked files were clean. No applicable AGENTS.md was found. On the 2026-10-19 continuation, prior implementation was already committed by the workspace owner in `be68373` and the tree was clean. Subsequent changes preserve that commit; no commit or flash operation was performed by this session.
 
-Milestone 2 adds `Crypto/adiantum.{c,h}`, a standalone C11 static library, pinned MIT primitives/licenses, `Crypto/README.md`, native test DLL harness and Python tests/reference under `tests/crypto`, and `tools/vendor_adiantum.py`. Root CMake builds the archive alongside firmware but does not link or call it in the storage path. `.gitignore` excludes reference checkouts (`.work-*`) and Python caches. Local build artifacts/dependencies are under ignored `build/`.
+Milestone 2 adds `Crypto/adiantum.{c,h}`, pinned MIT primitives/licenses, `Crypto/README.md`, native tests/reference and vendoring scripts. Milestone 3 reuses the bitsliced AES for control crypto. Milestone 4 integrates Adiantum through `Storage/volume.c`, adds `host/volume.py` and `tests/storage`. Existing dirty milestone-3 documentation/crypto wipe changes were preserved. Build artifacts/dependencies remain under ignored `build/`.
 
 ## Crypto decisions resolved in milestone 2
 
 - Google Adiantum revision `4feeb5aada81dc2f319996acd4ac95a2a07c99a4`: MIT scalar XChaCha12, NH and Poly1305 hash, official vectors and unchanged Python reference. No Linux/GPL sources included.
 - BearSSL revision `7bea48e5e850ab4cafbe68d3765cdaba13a86d6f`: MIT bitsliced constant-time AES256 source. Benchmark/SIMD code is excluded; bytewise serialization removes alignment/endian assumptions. Reproducible trimming and explicit scratch-buffer wipes are recorded in the vendoring script.
-- Same BearSSL revision selected for future SHA256/HMAC/HKDF/GCM, with exact source paths in `Crypto/README.md`; these control primitives are not yet vendored or tested. Milestone 3 must validate them before use.
+- Same BearSSL revision selected for SHA256/HMAC/HKDF/GCM; milestone 3 has now vendored and tested them. See `tools/vendor_control.py` and `Crypto/bearssl/LICENSE.txt`; algorithm code is retained with added wipes of explicit HMAC/HKDF/CTR scratch buffers.
 - Host reference uses pinned PyCryptodomex 3.23.0 (test-only dependency). Python's independent arbitrary-precision hash/reference implementation checks the C implementation.
 - Public API supports 16..4096 bytes and 0..32-byte tweaks, explicit destination capacity, exact in-place or disjoint buffers, rejection of partial/context/destination-tweak overlap, and context clearing. The sector API uses `LE64(LBA) || zero[24]` exactly. No heap or variable-size stack allocations.
 - Context size 1632 bytes. Cortex-M4 archive object text: Debug 18228 bytes; Release 6024 bytes, zero library data/BSS. No runtime integration resource claim is made.
 - Release compiler stack frames include 1440 bytes for initialization and 536 bytes for its nested AES schedule, with further callees additional. Budget at least 4 KiB plus caller/interrupt headroom and measure high-water before integration. Existing 1 KiB linker stack reservation is not adequate evidence. No linker allocation was changed in this milestone.
 - Table-free AES and fixed arithmetic paths reviewed at source level. No physical side-channel or compiled timing certification; volatile wipes do not guarantee erasure of all compiler spills/register copies. Adiantum still provides no authentication or wrong-key detection.
 
-## Next session: milestone 3
+## Milestone 3 implementation and decisions
+
+- `Control/PROTOCOL.md` specifies exact transcripts, role labels, key derivation, GCM AAD/nonces/counters, message/report lengths, status codes, timeouts, journal bytes and reset rules. `Control/` implements portable crypto wrappers, the journal, protocol and HID framing.
+- HMAC authenticates version, UID, mode, operation, committed epoch, RAM challenge counter, fresh host nonce and BEGIN request ID. The host validates the device challenge before proving possession, preventing future-session preplay. Mutual confirmation precedes directional HKDF/AES256-GCM traffic. No production/shared keys are embedded.
+- `Core/Src/control_app.c` supplies STM32 UID and flash access, main-loop processing and generation checks. USB callbacks only move bounded reports; reset/disconnect/deconfigure close the gate immediately, and main-loop processing wipes session state. USB reset preserves the RAM counter; power boot commits a new epoch before starting USB. Suspend/resume preserves the session.
+- Sectors 6/7 (`0x08040000..0x0807FFFF`) contain 128-byte append records with SHA256 corruption checks and commit-last writes. Full-bank rollover erases only the other bank and retains the current bank until a new record is verified. Torn writes skip incomplete slots; corrupt committed/torn-commit records fail closed. Some torn erases require offline service rather than guessing history. No automatic re-enrollment or authenticated-data recovery exists. Normal firmware updates must preserve both sectors.
+- `USB_DEVICE/App/usbd_composite.c` dispatches MSC interface 0 (EP01/81) and vendor HID interface 1 (feature report ID 1; EP82 declared). HID state is separate from ST's single MSC allocation; allocation size is checked. FIFO allocation fits the 320-word FS budget. `usbd_msc_scsi.c` signals UNIT ATTENTION/MEDIUM HAVE CHANGED when the future validated authorization hook opens media.
+- `host/bpctl.py` implements explicit identity selection, exclusive credential-file save/fsync before enrollment, enrollment confirmation, authentication and protected ping. File auth/wrapping keys are separate HKDF outputs. `host/README.md` has commands and limitations. Top-level dependencies: cryptography 46.0.3 and hidapi 0.14.0.post4. Test environment also installed cffi 2.1.1, pycparser 3.11 and setuptools 84.0.0; full delivery lock/packaging remains milestone 5.
+- Existing development USB VID/PID `0483:572A` is retained; it is not an assigned production identity. Authorized product IDs must be obtained before distribution. No claim of driverless/non-admin Windows operation is made.
+- Encrypted INSTALL_KEY reaches storage only after AEAD verification; temporary plaintext/key buffers are wiped. Milestone 4 replaces the board stub with authenticated volume/key validation; the original control-only test retains its mock validator.
+- Milestone 4 implements protected staged SETUP bound to operation 2. Mode changes retain the existing file credential; there is no plaintext re-enrollment bypass.
+
+## Milestone 4 implementation and decisions
+
+- `Storage/FORMAT.md` freezes version-1 header bytes, UTF-8 password encoding, fixed Argon2id parameters, password-plus-file HKDF composition, AES-GCM wrapping/AAD and key verification. Both 4 KiB copies must authenticate and agree; no fallback/repair. Journal format 2 adds a volume ID; v1 records remain readable and upgrade on append.
+- Setup commits a fresh mode/volume binding before SD writes. It initializes every logical sector and verifies each write, then writes header padding before the two ready markers. Any unfinished transaction stays locked and requires explicit restart. A new setup generates a fresh volume ID/data key; stale headers cannot bypass a mode change.
+- CID is read live via CMD10. Missing/swapped cards, invalid geometry/headers/keys and SD errors reject access. Caller write buffers remain intact. Data keys/expanded state are cleared on reset/failure and after initialization; no root/password/plaintext data key is persisted.
+- Setup/control runs in the main loop; MSC sector crypto retains the existing interrupt callback path. Disk callbacks reject work after USB generation changes. SysTick priority 0 preempts USB priority 1 so SPI timeouts advance; preserve these on CubeMX regeneration. Measure performance/timeouts on hardware.
+- CLI `setup` requires typed device/CID confirmation, password confirmation for encryption, and reports full initialization progress. `unlock` verifies headers/unwraps keys before protected installation. Current mode comes from the authenticated board/header, not the saved file's enrollment hint. CLI tests use simulated hardware only.
+- Added argon2-cffi 25.1.0 (MIT); test environment resolved argon2-cffi-bindings 26.1.0, with existing cffi 2.1.1/pycparser 3.11. Full transitive lock/executable delivery is milestone 5. No guaranteed Python memory erasure or physical timing certification.
+
+## Milestone 5 implementation and decisions
+
+- `host/gui.py` provides Tkinter device selection, automatic new-device setup/provisioned-device unlock, file open/save dialogs, mode selection, masked password/confirmation, explicit device/CID/capacity erase confirmation, progress, errors and safe-eject/Windows-format instructions. Scrollable content accommodates smaller windows. Selecting another device clears credential fields; multiple devices require explicit selection.
+- `host/bpworkflow.py` reuses the existing CLI crypto/protocol and volume modules. It opens the selected HID path and verifies UID each time; authenticated setup rechecks CID/capacity after confirmation. File save is exclusive and flushed before enrollment. Existing credentials survive retries. Password/file unwrap and fresh header validation precede unlock. Initialization checks monotonic progress and reports a five-minute no-progress timeout.
+- A single worker thread performs I/O/KDF work; queue messages are consumed by Tk on the main thread. Controls are disabled during operations, closing is blocked while busy, and password widgets are cleared after success/error/submission. No background auto-unlock, live lock, driver installation or physical formatting is added. Python memory erasure remains unguaranteed.
+- `host/BlackPillDrive.spec`, `host/build-requirements.txt`, `tools/build_windows.py` and `tools/package_windows.py` build an unsigned, windowed, one-folder Windows x64 application. The portable ZIP includes dependency/Python notices, version and source-hash manifest, and a ZIP SHA256 sidecar. No bit-identical archive guarantee is made.
+- Actual milestone-5 environment: Windows 11 build 26200, CPython **3.13.1** x64 and Tk 8.6.15. This differs from the older milestone's recorded Python version. PyInstaller 6.22.3, hooks 2026.8, and all resolved packaging dependencies are pinned. The package should be refreshed/retested for production delivery. Windows 10/11 x64 are intended targets; fresh-machine checks remain pending.
+- `host/smoke.py` checks hidden Tk widgets, native HID loading and Argon2id/AES-GCM/HKDF wrapping without device enumeration. The packaging script runs the EXE with Python environment overrides removed, no console, and a 60-second timeout. `host/WINDOWS.md` documents extraction, unsigned-executable handling, workflows and recovery limitations; `host/VALIDATION.md` records the remaining physical acceptance checks.
+- Existing milestone 3/4 work and unrelated editor/ST bundle configuration changes in the working tree were preserved. No commits, flashes or physical storage operations were performed.
+
+## Next session: physical acceptance and release readiness
 
 Suggested prompt:
 
-> Read IMPLEMENTATION_PLAN.md and HANDOFF.md. Implement milestone 3: specify and implement composite USB HID control, provisioning, replay-safe flash persistence, authenticated protected sessions and a minimal CLI. Resolve transcript/nonce/reset/flash questions before coding dependent behavior, validate selected control primitives, run feasible tests, and update HANDOFF.md. Do not initialize or modify an SD card.
+> Read IMPLEMENTATION_PLAN.md, HANDOFF.md and host/VALIDATION.md. Validate the packaged utility on a fresh Windows machine and the actual board, using an explicitly designated disposable/backed-up card for destructive checks. Record USB behavior, file hashes, raw-card observations, power-loss outcomes, throughput and stack high-water. Resolve failures and update the handoff; do not treat simulation as physical evidence.
 
-Do not integrate live SD encryption or start the GUI ahead of their milestones. Subsequent sessions follow milestones 3, 4 and 5 in order.
+Before trusting hardware, complete the pending USB, flash, storage, resource and Windows workflow checks.
 
 ## Open details and blockers
 
-See section 5 of IMPLEMENTATION_PLAN.md for the full list. Adiantum provenance, licensing, correctness vectors and target compilation are resolved. Priorities are control primitive validation; exact authenticated transcript and key derivation; replay-safe flash journaling; USB composite support; enrollment power-loss behavior; precise header/file formats and wrong-data-key rejection; Windows packaging and hardware performance.
+See section 5 of IMPLEMENTATION_PLAN.md. Protocol/storage formats, GUI/packaging and simulated failures are implemented. Remaining priorities are fresh-machine launch/permissions, physical USB/flash/SD validation, stack high-water and throughput. Release signing, production USB IDs and dependency/runtime refresh remain distribution work. Strict dual-header validation intentionally favors fail-closed behavior over availability after corruption.
 
-These require engineering resolution before dependent implementation. No production protocol or persistent byte layout is frozen yet. A hardware validation session will require access to the actual board and an explicitly designated disposable/backed-up card.
+Development control/file/journal formats are in `Control/PROTOCOL.md`; SD/wrapped-key format is in `Storage/FORMAT.md`. A hardware validation session requires the actual board and an explicitly designated disposable/backed-up card for writes. Host data-hash tests are simulated block streams, not Windows filesystem validation.
 
 ## Validation record
+
+### Milestone 5, 2026-10-20
+
+- Ran `build/gui-venv/Scripts/python.exe tests/host/test_gui.py build/storage-host/Debug/storage_sim.dll -v` and the Release equivalent: all **9 tests** passed in each configuration. Tests use hidden real Tk widgets and actual C protocol/journal/storage code with memory-backed hardware.
+- Covered both setup modes and data SHA256 across reset/unlock; wrong file/password; mismatched destructive confirmation; card swap after confirmation; interrupted initialization/restart/mode change; exclusive file preservation; stale/duplicate identities; multi-device selection; file-dialog cancellation; main-loop responsiveness and busy/close behavior; password clearing; five-minute initialization-stall handling.
+- Reran the full milestone-4 storage suite against Debug and Release DLLs: all groups passed. Reran milestone-3 Release control tests: all nine groups passed. Firmware was not changed by milestone 5; the last measured link sizes remain the milestone-4 figures below.
+- Built with `python tools/build_windows.py`; dependency consistency and packaged runtime self-test passed. `build/package-smoke.json` records Python 3.13.1, Tk 8.6.15 and no hardware access. Source smoke command also passed: `build/gui-venv/Scripts/python.exe host/gui.py --self-test build/gui-source-smoke.json`.
+- Deliverables: `build/dist/BlackPillDrive/BlackPillDrive.exe` (retain its `_internal` directory), `build/BlackPillDrive-windows-x64.zip`, and `build/BlackPillDrive-windows-x64.zip.sha256`. Reproduction instructions are in `host/README.md`; notices and source/version manifest are inside the bundle.
+- Packaging initially found an unrelated third-party hook for a generic module name; renamed the local module to `bpworkflow` and rebuilt successfully. A PowerShell wrapper was blocked by the machine's script execution policy; replaced it with the tested Python build entry point without changing system policy. PyInstaller warnings concern conditional/optional platform imports; the bundled native modules passed runtime checks.
+- No fresh-machine, visible-GUI visual review, physical USB, Windows filesystem, raw-card, throughput or stack high-water result is claimed. These remain in `host/VALIDATION.md`. The executable is unsigned; no board was flashed or card erased.
+
+### Milestone 4, 2026-10-19
+
+- Reproduction commands: `host/README.md`. Built `tests/storage` with VS2022/MSVC 19.43, then ran `python tests/storage/test_storage.py build/storage-host/Debug/storage_sim.dll` and Release with `PYTHONPATH=build/control-python;build/crypto-python`. All groups passed.
+- Both modes: all 48 logical sectors initialized correctly in a 64-sector simulated card; encrypted zeros and written sectors matched the independent Google Python reference. Multi-sector caller buffers unchanged; SHA256 of a full simulated data stream matched after reset/reunlock. Mapping, capacity/bounds, partial SD errors and key clearing passed.
+- Rejected 263 header/padding corruptions, authenticated malformed metadata, wrong password/file/data key, absent/swapped cards and undersized/mismatched geometry. Bounded KDF parsing and no persisted root/plaintext data key checks passed.
+- All 80 SD-write interruption boundaries stayed locked after reboot. All 128 byte positions of journal binding writes failed before any SD mutation. Explicit restart, stale-volume rejection, failed/completed mode changes, readback verification, staging expiry/order and unauthorized setup passed. These are simulations, not guarantees about SD-controller power-loss behavior.
+- Actual CLI enrollment/setup/progress/unlock, wrong password and destructive-confirmation cancellation passed against simulated firmware. `python host/bpctl.py --help` and `git diff --check` passed.
+- Rebuilt/reran milestone-3 Debug/Release tests: all nine groups passed, including primitive comparisons, replay/framing/composite tests and original 387 flash cuts/128 corruptions/12 erase cuts. Reran milestone-2 Debug/Release tests: 180 official vectors, 128 sector comparisons, 133 boundary comparisons and API tests passed.
+- STM32 Debug/Release builds passed: Debug FLASH 86604 B, RAM 17816 B; Release FLASH 39844 B, RAM 17816 B. Limits are 256 KiB firmware flash and 128 KiB RAM. RAM includes the 8 KiB stack reservation; high-water remains unmeasured.
+- No board flashed, no hardware HID access, no physical SD writes. Pending: Windows enumeration/HID permissions/media insertion, filesystem hashes after safe eject/reconnect, raw SD inspection, physical power interruption, throughput, stack high-water, SD timeout and suspend/reset behavior.
+
+### Milestone 3, finalized 2026-10-19
+
+- Commands are reproduced in `host/README.md`. Host build: `cmake -S tests/control -B build/control-host -G 'Visual Studio 17 2022' -A x64`, then `cmake --build build/control-host --config Debug` and `--config Release`. With `$env:PYTHONPATH = 'build/control-python'`, ran `python tests/control/test_control.py build/control-host/Debug/bp_sim.dll` and the Release DLL. Both passed all groups.
+- Published SHA256/HMAC/HKDF/AES256-GCM cases and 60 independent AEAD comparisons passed. Wrong file/key, protected key transfer, both gates, reset/fatal-SD clearing, challenge expiry/single use, USB/power reset replay, future-session preplay, idle timeout and counter exhaustion tests passed.
+- Every-byte protected-request tampering, truncation, oversize, HID fragmentation/order/padding/timeouts/backpressure/reset tests passed. The real Python HID framing client interoperated with the C transport. Compiled composite descriptors, MSC request dispatch, strict HID setup validation and EP0 exchange passed with low-level USB stubs. Actual MSC storage callbacks were tested for zero raw SD access while locked.
+- Journal simulation passed 387 byte-cut enrollment/boot-append/rollover cases, each of 128 committed-record byte corruptions, 12 interrupted erase positions, rollover and epoch overflow. Outcomes are either strictly advanced committed freshness or fail-closed fault; tests do not promise availability after corrupt/torn flash.
+- Credential file save/load, exclusive-create/no overwrite and size bounds passed. No hardware HID enumeration command was run; CLI operations were tested against simulation only.
+- Final checks: `git diff --check` passed; `python host/bpctl.py --help` passed; regenerating pinned control sources with `python tools/vendor_control.py .work-bearssl` produced byte-identical SHA256 hashes for every vendored file.
+- STM32 `cmake --preset Debug/Release` and `cmake --build --preset Debug/Release` passed with no compiler warnings in final logs. Debug: FLASH 68592 B / 256 KiB firmware region, RAM 14552 B / 128 KiB. Release: FLASH 32304 B, RAM 14544 B. RAM includes the 8 KiB stack reservation; actual high-water is unmeasured. Final logs: ignored `build/control-host-{Debug,Release}.log` and `build/control-target-{Debug,Release}.log`.
+- Pending hardware evidence: Windows enumeration and HID access, real reconnect/reset/suspend behavior, media insertion discovery, flash write/erase power interruption and wear, timing/side channels, stack high-water. No board was flashed and no card was initialized or modified.
+
+### Earlier milestones
 
 - Documentation session: inspected storage APIs, MSC integration, flash/RAM layout, CMake presets, ST bundle configuration and git status.
 - Checked documentation diff for whitespace errors and confirmed only the two requested Markdown files were added.

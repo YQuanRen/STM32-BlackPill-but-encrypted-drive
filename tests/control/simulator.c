@@ -70,6 +70,9 @@ int SD_SPI_IsReady(void) {return !sd_fail;}
 uint32_t SD_SPI_GetBlockCount(void) {raw_calls++;return 1024;}
 int SD_SPI_ReadBlocks(uint32_t a,uint8_t *p,uint16_t n) {(void)a;(void)p;(void)n;raw_calls++;return !sd_fail;}
 int SD_SPI_WriteBlocks(uint32_t a,const uint8_t *p,uint16_t n) {(void)a;(void)p;(void)n;raw_calls++;return !sd_fail;}
+uint32_t BP_StorageCapacity(void) {return c.media?SD_SPI_GetBlockCount()-16:0;}
+int BP_StorageRead(uint32_t a,uint8_t *p,uint16_t n) {return c.media&&SD_SPI_ReadBlocks(a+16,p,n);}
+int BP_StorageWrite(uint32_t a,const uint8_t *p,uint16_t n) {return c.media&&SD_SPI_WriteBlocks(a+16,p,n);}
 int sim_storage(void) {
     uint8_t data[512]={0};uint32_t blocks;uint16_t size;int mask=0;
     if(USBD_Storage_Interface_fops_FS.Init(0)==0)mask|=1;

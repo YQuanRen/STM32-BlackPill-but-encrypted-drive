@@ -2,13 +2,19 @@
 #include <string.h>
 #define T_LEN 73u
 static void end_session(bp_control *c) {
+    if(c->clear_user&&!c->media)c->clear_user(c->user);
     bp_wipe(c->transcript,sizeof(c->transcript)); bp_wipe(c->in_key,32); bp_wipe(c->out_key,32);
     c->pending=c->session=0; c->rx=c->tx=0;
 }
 void bp_control_init(bp_control *c,bp_journal *j,bp_authorize_fn f,void *u) {
     memset(c,0,sizeof(*c)); c->journal=j;c->authorize=f;c->user=u;
 }
-void bp_control_reset(bp_control *c) { end_session(c); c->media=0; }
+void bp_control_reset(bp_control *c) {
+    end_session(c);c->media=0;if(c->clear_user)c->clear_user(c->user);
+}
+void bp_control_tick(bp_control *c,uint32_t now) {
+    if(c->session&&(uint32_t)(now-c->activity)>=60000)end_session(c);
+}
 static size_t reply(uint8_t *out,const uint8_t *in,int status,const void *data,size_t n) {
     memcpy(out,in,8); out[0]=1;out[1]|=128;bp_put(out+6,n+1,2);out[8]=(uint8_t)status;
     if(n) memcpy(out+9,data,n);
@@ -20,7 +26,7 @@ size_t bp_control_request(bp_control *c,const uint8_t *in,size_t len,uint8_t out
     if(!in||!out||len<8||len>256) return 0;
     if(in[0]!=1||in[1]&128||bp_u16(in+6)!=len-8) return reply(out,in,BP_FORMAT,0,0);
     unsigned cmd=in[1];const uint8_t *p=in+8;size_t n=len-8;
-    if(c->session&&(uint32_t)(now-c->activity)>=60000) end_session(c);
+    bp_control_tick(c,now);
     if(cmd==1) {
         if(n) return reply(out,in,BP_FORMAT,0,0);
         memcpy(tmp,j->identity,16);tmp[16]=(uint8_t)j->state;tmp[17]=(uint8_t)j->mode;bp_put(tmp+18,j->epoch,8);
@@ -78,6 +84,14 @@ size_t bp_control_request(bp_control *c,const uint8_t *in,size_t len,uint8_t out
             if(c->operation!=1||c->media) status=BP_STATE;
             else {status=c->authorize?c->authorize(c->user,j->mode,op==3?tmp+1:NULL):BP_UNSUPPORTED;
                   if(status==BP_OK)c->media=1;}
+        } else if(op>=4&&op<=7&&c->storage) {
+            if(c->media)status=BP_STATE;
+            else {
+                uint8_t response[128];size_t response_n=0;
+                status=c->storage(c->user,c->operation,tmp,plain,response,&response_n);
+                if(response_n>sizeof(response)){status=BP_FORMAT;response_n=0;}
+                memcpy(tmp+1,response,response_n);rn=1+response_n;bp_wipe(response,sizeof(response));
+            }
         } else if(op==4) status=c->operation==2?BP_UNSUPPORTED:BP_STATE;
         else status=BP_FORMAT;
         bp_wipe(tmp+rn,sizeof(tmp)-rn);tmp[0]=(uint8_t)status;
