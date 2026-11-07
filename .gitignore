@@ -1,4 +1,6 @@
-build
+/build/*
+!/build/BlackPillDrive-windows-x64.zip
+!/build/BlackPillDrive-windows-x64.zip.sha256
 mx.scratch
 .work-*
 __pycache__/
