@@ -48,13 +48,14 @@ static int disk_write(void *u,uint32_t lba,const uint8_t data[512]) {
     (void)u;return generation==handled_generation&&SD_SPI_WriteBlocks(lba,data,1);
 }
 static void clear_volume(void *u) {bp_volume_reset(u);}
+static int destroy_volume(void *u) {return bp_volume_destroy(u);}
 void BP_Init(void) {
     uint8_t id[16]={0};bp_put(id,HAL_GetUIDw0(),4);bp_put(id+4,HAL_GetUIDw1(),4);bp_put(id+8,HAL_GetUIDw2(),4);
     bp_flash io={NULL,flash_read,flash_program,flash_erase};
     bp_journal_boot(&journal,&io,id);
     bp_disk disk={NULL,disk_describe,disk_read,disk_write};bp_volume_init(&volume,&journal,&disk);
     bp_control_init(&control,&journal,bp_volume_authorize,&volume);
-    control.storage=bp_volume_command;control.clear_user=clear_volume;
+    control.storage=bp_volume_command;control.clear_user=clear_volume;control.destroy=destroy_volume;
     bp_transport_reset(&transport);media_ready=0;generation=handled_generation=0;
 }
 void BP_USB_Reset(void) {

@@ -207,3 +207,23 @@ Development control/file/journal formats are in `Control/PROTOCOL.md`; SD/wrappe
 3. List failures, unverified behavior and any security limitations introduced or discovered.
 4. Identify the next bounded task and any user decisions still needed.
 5. Keep IMPLEMENTATION_PLAN.md consistent with agreed changes. Never mark tests passed or security properties verified based solely on code inspection.
+
+### Anti-forensic additions, 2026-11-11
+
+- Added crypto-erase (DESTROY: `BEGIN` op 3 + SECURE op 8), an opt-in full secure-erase
+  (format-1 full init surfaced in CLI/GUI), a host-only duress/decoy password
+  (authentication file version 2), and a broad GUI refresh. Design and threat-model
+  limits: `ANTIFORENSIC.md`. Byte-level: `Control/PROTOCOL.md`, `Storage/FORMAT.md`.
+  Full change list and file map: `CLAUDE.md`.
+- Validated in a Linux sandbox (logic/software only): gcc-13 build of
+  Crypto+Control+Storage+storage simulator is clean; `tests/antiforensic/test_destroy.c`
+  passes 21/21 checks, exercising the real journal/volume/control code and BearSSL
+  primitives through both the direct erase API and the full `BEGIN(op3)/PROVE/
+  SECURE(op8)` handshake, including fail-safe ordering on SD error. All host modules and
+  the new `tests/host/test_antiforensic.py` pass `py_compile`.
+- NOT done, pending on the dev machine (do not treat as passed): STM32 Debug/Release
+  firmware build (no ARM toolchain in the sandbox; `Core/Src/control_app.c` reviewed,
+  not compiled); the host Python suites (`cryptography`/`argon2-cffi` not installable
+  here); any hardware flashing, USB enumeration, physical SD writes, or real power-loss
+  behaviour of the header-then-journal erase ordering. No board was flashed and no card
+  was written.

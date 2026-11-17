@@ -265,7 +265,7 @@ print('PASS: 387 append/enrollment/rollover power cuts, 128 corruptions, 12 torn
 
 with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]/'build') as temp:
     path=Path(temp)/'credential.json';bp.save_file(path,identity,bytes(range(32)),1)
-    assert bp.load_file(path)==(identity,bytes(range(32)),1)
+    assert bp.load_file(path)==(identity,bytes(range(32)),1,None)
     try:bp.save_file(path,identity,bytes(32),2)
     except FileExistsError:pass
     else:raise AssertionError('Overwrote credential')

@@ -148,6 +148,18 @@ void bp_volume_step(bp_volume *v) {
     if(headers_write(v,2))return;
     adiantum_clear(&v->cipher);bp_wipe(v->scratch,512);bp_wipe(v->verify,512);v->state=2;
 }
+int bp_volume_destroy(bp_volume *v) {
+    /* Crypto-erase: zero and verify both header copies (physical sectors 0..15)
+     * first. write_verified() fails closed (BP_IO) without touching the journal, so
+     * a card error leaves credentials intact for an explicit retry. */
+    memset(v->scratch,0,512);
+    for(unsigned i=0;i<16;++i) if(write_verified(v,i,v->scratch)) return BP_IO;
+    /* The wrapped key is now gone from the card; wipe the credential journal so the
+     * device returns to virgin and can no longer authenticate the old volume. */
+    if(!bp_journal_destroy(v->journal)) {bp_volume_reset(v);return BP_FAULT;}
+    bp_volume_reset(v);
+    return BP_OK;
+}
 int bp_volume_ready(bp_volume *v) {return v->unlocked&&v->state==2&&same_card(v)==BP_OK;}
 static int bounds(bp_volume *v,uint32_t lba,uint32_t n) {
     return n&&n<=SIZE_MAX/512&&v->physical>16&&lba<v->physical-16&&n<=v->physical-16-lba;

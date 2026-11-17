@@ -10,6 +10,8 @@ typedef struct {
     bp_authorize_fn authorize;
     int (*storage)(void *,unsigned,const uint8_t *,size_t,uint8_t *,size_t *);
     void (*clear_user)(void *);
+    /* Anti-forensic crypto-erase hook (DESTROY opcode); NULL means unsupported. */
+    int (*destroy)(void *);
     void *user;
     uint64_t challenge_counter,rx,tx;
     uint32_t started,activity;

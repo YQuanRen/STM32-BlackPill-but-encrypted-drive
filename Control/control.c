@@ -44,7 +44,8 @@ size_t bp_control_request(bp_control *c,const uint8_t *in,size_t len,uint8_t out
     if(cmd==3) {
         if(c->media) return reply(out,in,BP_STATE,0,0);
         end_session(c);
-        if(n!=33||(p[0]!=1&&p[0]!=2)) return reply(out,in,BP_FORMAT,0,0);
+        /* operation 1 unlock, 2 setup, 3 destroy (anti-forensic crypto-erase). */
+        if(n!=33||p[0]<1||p[0]>3) return reply(out,in,BP_FORMAT,0,0);
         if(c->challenge_counter==UINT64_MAX) return reply(out,in,BP_FAULT,0,0);
         c->challenge_counter++;c->operation=p[0];c->started=now;c->pending=1;
         memcpy(c->transcript,"BP1",3);memcpy(c->transcript+3,j->identity,16);
@@ -92,6 +93,12 @@ size_t bp_control_request(bp_control *c,const uint8_t *in,size_t len,uint8_t out
                 if(response_n>sizeof(response)){status=BP_FORMAT;response_n=0;}
                 memcpy(tmp+1,response,response_n);rn=1+response_n;bp_wipe(response,sizeof(response));
             }
+        } else if(op==8&&plain==1) {
+            /* DESTROY: anti-forensic crypto-erase. Only inside a destroy (operation 3)
+             * session and never while media is mounted. Success returns the device to
+             * virgin; the session's keys stay valid only for this one reply. */
+            if(c->operation!=3||c->media) status=BP_STATE;
+            else status=c->destroy?c->destroy(c->user):BP_UNSUPPORTED;
         } else if(op==4) status=c->operation==2?BP_UNSUPPORTED:BP_STATE;
         else status=BP_FORMAT;
         bp_wipe(tmp+rn,sizeof(tmp)-rn);tmp[0]=(uint8_t)status;

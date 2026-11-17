@@ -20,4 +20,10 @@ int bp_journal_boot(bp_journal *,const bp_flash *,const uint8_t[16]);
 int bp_journal_enroll(bp_journal *,unsigned,const uint8_t[32]);
 /* Called only by authenticated destructive setup after validating its proposal. */
 int bp_journal_bind(bp_journal *,unsigned,const uint8_t[16]);
+/* Anti-forensic credential wipe. Erases both credential banks (flash sectors 6/7)
+ * and clears the RAM auth secret and volume binding, returning the device to the
+ * virgin (state 0) state so it can be provisioned afresh. Called only from an
+ * authenticated destroy session (Control/control.c). Returns 1 on success; on any
+ * bank-erase failure it leaves no usable secret and reports fault (state 2, 0). */
+int bp_journal_destroy(bp_journal *);
 #endif

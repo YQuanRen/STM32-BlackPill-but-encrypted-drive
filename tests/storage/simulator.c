@@ -29,7 +29,8 @@ static uint8_t *sector(uint32_t a,int create){
 static int dr(void *u,uint32_t a,uint8_t *p){(void)u;reads++;if(!present||rd_fail||a>=capacity)return 0;uint8_t *s=sector(a,0);if(s)memcpy(p,s,512);else memset(p,0xa5,512);return 1;}
 static int dw(void *u,uint32_t a,const uint8_t *p){(void)u;if(!present||a>=capacity)return 0;uint8_t *s=sector(a,1);if(!s)return 0;if(cut==0){if(torn>=0)memcpy(s,p,(unsigned)torn);return 0;}if(cut>0)cut--;writes++;memcpy(s,p,512);if(corrupt_write)s[99]^=1;return 1;}
 static void clear(void *u){bp_volume_reset(u);}
-int sim_boot(void){bp_flash f={0,fr,fp,fe};bp_disk d={0,describe,dr,dw};int r=bp_journal_boot(&j,&f,identity);bp_volume_init(&v,&j,&d);bp_control_init(&c,&j,bp_volume_authorize,&v);c.storage=bp_volume_command;c.clear_user=clear;return r;}
+static int destroy_hook(void *u){return bp_volume_destroy(u);}
+int sim_boot(void){bp_flash f={0,fr,fp,fe};bp_disk d={0,describe,dr,dw};int r=bp_journal_boot(&j,&f,identity);bp_volume_init(&v,&j,&d);bp_control_init(&c,&j,bp_volume_authorize,&v);c.storage=bp_volume_command;c.clear_user=clear;c.destroy=destroy_hook;return r;}
 void sim_fresh(void){memset(flash,255,sizeof(flash));memset(disk,0xa5,sizeof(disk));memset(cid,0x31,16);cut=flash_cut=torn=-1;extra_count=0;capacity=SECTORS;rd_fail=corrupt_write=writes=reads=now=0;present=1;sim_boot();}
 void sim_torn(int n){torn=n>=0&&n<512?n:-1;}
 void sim_raw_sector(uint32_t a,void *p){uint8_t *s=sector(a,0);if(s)memcpy(p,s,512);else memset(p,0xa5,512);}

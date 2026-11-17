@@ -59,3 +59,14 @@ int bp_journal_enroll(bp_journal *j,unsigned mode,const uint8_t auth[32]) {
     if(j->state!=0||(mode!=1&&mode!=2)) return 0;
     j->mode=mode; memcpy(j->auth,auth,32); return append(j);
 }
+int bp_journal_destroy(bp_journal *j) {
+    /* Erase both banks even if the first fails, so no committed record survives a
+     * partial wipe. Only then clear the RAM secret and binding. */
+    int ok0=j->io.erase(j->io.user,0);
+    int ok1=j->io.erase(j->io.user,1);
+    bp_wipe(j->auth,32); bp_wipe(j->volume,16);
+    j->mode=0; j->epoch=0; j->bank=0; j->next=0;
+    if(!ok0||!ok1) { j->state=2; return 0; }
+    j->state=0; /* Virgin: a fresh enrollment may now re-provision the device. */
+    return 1;
+}

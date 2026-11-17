@@ -147,26 +147,60 @@ def devices():
 def load_file(path):
     if Path(path).stat().st_size>4096: raise ProtocolError('Oversized credential file')
     data=json.loads(Path(path).read_text(encoding='utf-8'))
-    if set(data)!={'version','device','root','mode'} or data['version']!=1 or data['mode'] not in [1,2]:
+    # Version 1 files have no duress field; version 2 may carry an optional one.
+    allowed={'version','device','root','mode'}
+    if not allowed<=set(data) or set(data)-allowed-{'duress'} or \
+       data.get('version') not in (1,2) or data['mode'] not in (1,2):
+        raise ProtocolError('Invalid credential file format')
+    duress=data.get('duress')
+    if duress is not None and (data['version']!=2 or not isinstance(duress,dict)):
         raise ProtocolError('Invalid credential file format')
     identity,root=bytes.fromhex(data['device']),bytes.fromhex(data['root'])
     if len(identity)!=16 or len(root)!=32: raise ProtocolError('Invalid credential lengths')
-    return identity,root,data['mode']
+    return identity,root,data['mode'],duress
 
-def save_file(path, identity, root, mode):
-    # Exclusive create: never overwrite another credential. Save and fsync BEFORE enrollment.
-    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+def _write_file(fd, identity, root, mode, duress):
     with os.fdopen(fd,'w',encoding='utf-8') as f:
-        json.dump({'version':1,'device':identity.hex(),'root':root.hex(),'mode':mode},f)
+        data={'version':2 if duress else 1,'device':identity.hex(),'root':root.hex(),'mode':mode}
+        if duress: data['duress']=duress
+        json.dump(data,f)
         f.flush();os.fsync(f.fileno())
+
+def save_file(path, identity, root, mode, duress=None):
+    # Exclusive create: never overwrite another credential. Save and fsync BEFORE enrollment.
+    _write_file(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),identity,root,mode,duress)
+
+def update_file(path, duress):
+    # Rewrite an EXISTING authentication file to set (dict) or clear (None) its
+    # decoy/duress verifier, preserving device/root/mode. Atomic replace, 0600.
+    identity,root,mode,_=load_file(path)
+    tmp=f"{path}.new"
+    _write_file(os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600),identity,root,mode,duress)
+    os.replace(tmp,path)
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('command',choices=['list','info','enroll','auth','unlock','setup','status'])
+    p.add_argument('command',choices=['list','info','enroll','auth','unlock','setup','status','destroy','duress'])
     p.add_argument('--device',help='exact 32-hex-digit identity from list')
     p.add_argument('--file',help='authentication file on another drive; keep a backup')
     p.add_argument('--mode',choices=['auth','encrypted'])
+    p.add_argument('--secure-erase',action='store_true',
+                   help='setup: full overwrite of every sector (slow anti-forensic erase) instead of fast setup')
+    p.add_argument('--clear',action='store_true',help='duress: remove the decoy password instead of setting it')
     args=p.parse_args(); selected=[]
+    # duress is a host-only operation on the authentication file; no device needed.
+    if args.command=='duress':
+        import volume
+        if not args.file: raise ProtocolError('--file is required')
+        if args.clear:
+            update_file(args.file,None);print('Decoy (duress) password cleared.');return
+        _,_,fmode,_=load_file(args.file)
+        if fmode!=2: raise ProtocolError('Duress applies only to encrypted (file+password) drives')
+        pw=getpass.getpass('New decoy (duress) password: ')
+        if pw!=getpass.getpass('Confirm decoy password: '): raise ProtocolError('Decoy passwords do not match')
+        update_file(args.file,volume.duress_make(pw))
+        print('Decoy (duress) password set. Typing it at unlock will CRYPTO-ERASE the drive instead of unlocking.')
+        return
     try:
         for d in devices():
             wire=HIDWire(d['path'])
@@ -187,23 +221,34 @@ def main():
             if info['state']!=0 or not args.mode:raise ProtocolError('New enrollment needs a virgin device and --mode')
             mode=1 if args.mode=='auth' else 2
             root=secrets.token_bytes(32);save_file(args.file,identity,root,mode)
-        fid,root,mode=load_file(args.file)
+        fid,root,mode,duress=load_file(args.file)
         if fid!=identity:raise ProtocolError('File belongs to another device')
         if args.command=='enroll' and args.mode and mode!=(1 if args.mode=='auth' else 2):raise ProtocolError('Mode does not match saved file')
         auth,_=file_keys(root,identity)
         if args.command in ('enroll','setup') and info['state']==0:
             client.enroll(identity,mode,auth);info=client.info()
         mode=info['mode'] # Enrollment file's mode is a hint, never the current policy.
-        client.authenticate(identity,mode,auth,2 if args.command=='setup' else 1);client.ping()
+        operation=3 if args.command=='destroy' else 2 if args.command=='setup' else 1
+        client.authenticate(identity,mode,auth,operation);client.ping()
         import volume
         if args.command=='status':
             state=volume.status(client);state['cid']=state['cid'].hex();print(json.dumps(state));return
+        if args.command=='destroy':
+            print(f"Device {identity.hex()} will be CRYPTO-ERASED; encrypted data becomes permanently unrecoverable.")
+            if input('Type ERASE to confirm: ').strip()!='ERASE':raise ProtocolError('Erase cancelled')
+            volume.destroy(client)
+            print('Crypto-erase complete. The device is now blank and must be set up again before use.');return
         if args.command=='setup':
             if not args.mode:raise ProtocolError('Setup requires --mode auth or encrypted')
             chosen=1 if args.mode=='auth' else 2
+            version=1 if args.secure_erase else 2
             card=volume.status(client)
             print(f"Device {identity.hex()} | Card {card['cid'].hex()} | {card['physical']*512} bytes | Mode {args.mode}")
-            print('Fast setup replaces the volume. Back up first; old data in untouched sectors is NOT erased.')
+            if version==1:
+                print('SECURE ERASE: every sector is overwritten. This is slow (hours on large cards) but')
+                print('leaves no old plaintext behind.')
+            else:
+                print('Fast setup replaces the volume. Back up first; old data in untouched sectors is NOT erased.')
             print('Keep the authentication file on another drive. After setup, quick-format through the Black Pill.')
             phrase=f"ERASE {identity.hex()} {card['cid'].hex()}"
             if input(f'Type {phrase} to initialize: ').strip()!=phrase:raise ProtocolError('Initialization cancelled')
@@ -215,7 +260,7 @@ def main():
             client.authenticate(identity,mode,auth,2)
             latest=volume.status(client)
             if (latest['cid'],latest['physical'])!=(card['cid'],card['physical']):raise ProtocolError('Card changed after confirmation')
-            h,key=volume.build(identity,root,chosen,card['cid'],card['physical'],password)
+            h,key=volume.build(identity,root,chosen,card['cid'],card['physical'],password,version=version)
             volume.start_setup(client,h,key)
             while True:
                 progress=volume.status(client)
@@ -233,7 +278,15 @@ def main():
             if actual!=mode:raise ProtocolError('Volume mode differs from authenticated device mode')
             if mode==2:
                 password=getpass.getpass('Password: ')
-                key=volume.unwrap(h,identity,root,password)
+                try:
+                    key=volume.unwrap(h,identity,root,password)
+                except ProtocolError:
+                    # Decoy/duress password: crypto-erase, then report an ordinary failure.
+                    if volume.duress_match(duress,password):
+                        try:client.authenticate(identity,mode,auth,3);volume.destroy(client)
+                        except Exception:pass
+                        raise ProtocolError('Wrong password/file or damaged wrapped key')
+                    raise
                 client.authenticate(identity,mode,auth)
                 if volume.read_header(client,identity,auth)!=h:raise ProtocolError('Card changed while entering password')
                 client.exchange(5,b'\x03'+key,secure=True)

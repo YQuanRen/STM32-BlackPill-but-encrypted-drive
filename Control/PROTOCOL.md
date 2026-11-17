@@ -123,3 +123,24 @@ SD timeouts advance; preserve these priorities on CubeMX regeneration. Disk
 callbacks reject I/O after a reset generation change. Flash programming can stall
 single-bank instruction fetch; host timeouts allow for this and hardware USB
 behavior remains to be measured. No epoch is allocated on enumeration resets.
+
+## Anti-forensic additions (2026-11-11)
+
+These extend the protocol without changing any existing transcript. See
+`ANTIFORENSIC.md` for rationale and threat-model limits.
+
+- `BEGIN` operation byte now accepts `3 DESTROY` in addition to `1 unlock` and
+  `2 setup`. Operation 3 is bound into transcript T exactly like the others, so the
+  destroy intent is authenticated by the handshake. It is rejected while media is
+  authorised.
+- New protected (SECURE) opcode `8 DESTROY`, empty body. Valid only inside an
+  operation-3 session and only while media is unmounted; otherwise `2 state`. It calls
+  the board's destroy hook, which zeroes both on-card header copies (physical sectors
+  0..15) and then erases the credential journal (sectors 6/7), returning the device to
+  the virgin state. The header zeroing is verified and happens first: an SD failure
+  returns `7 SD failure` with the journal intact, so the operation is retryable. On
+  success the response is an ordinary encrypted `0 OK`; the session's keys remain valid
+  only for that one reply, and the next `INFO` reports `state = 0`.
+- After DESTROY the device is unprovisioned: a fresh `ENROLL` may re-provision it.
+  Encrypted data is unrecoverable because the only copy of the wrapped data key lived
+  in the now-zeroed header.

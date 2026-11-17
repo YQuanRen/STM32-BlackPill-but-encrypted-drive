@@ -77,3 +77,47 @@ def start_setup(client,h,key):
     for off in range(0,288,128):
         client.exchange(5,b'\x04'+struct.pack('<H',off)+payload[off:off+128],secure=True)
     client.exchange(5,b'\x05',secure=True)
+
+# --- Anti-forensic crypto-erase (DESTROY) and duress credential -----------------
+# DUR1 duress parameters mirror the data-key Argon2id parameters so no extra tuning
+# is introduced. The verifier lives only in the host authentication file; it is
+# never sent to the board. It lets a coerced owner type a decoy password that
+# triggers the device crypto-erase instead of unlocking (see ANTIFORENSIC.md).
+DURESS_KDF = (65536, 3, 1)  # memory KiB, iterations, parallelism
+
+def _duress_hash(password, salt, kdf):
+    mem, iters, par = kdf
+    encoded = password.encode('utf-8')
+    if not 1 <= len(encoded) <= 1024:
+        raise ProtocolError('Duress password must be 1..1024 UTF-8 bytes')
+    return hash_secret_raw(encoded, salt, int(iters), int(mem), int(par), 32, Type.ID, version=19)
+
+def duress_make(password):
+    """Build the duress verifier stored in the authentication file."""
+    salt = secrets.token_bytes(16)
+    return {'version': 1, 'salt': salt.hex(),
+            'verifier': _duress_hash(password, salt, DURESS_KDF).hex(),
+            'kdf': list(DURESS_KDF)}
+
+def duress_match(duress, password):
+    """Constant-time check of an entered password against the stored verifier."""
+    if not duress:
+        return False
+    try:
+        salt = bytes.fromhex(duress['salt'])
+        want = bytes.fromhex(duress['verifier'])
+        kdf = tuple(duress.get('kdf', DURESS_KDF))
+    except (KeyError, ValueError, TypeError):
+        return False
+    if len(salt) != 16 or len(want) != 32 or len(kdf) != 3:
+        return False
+    try:
+        got = _duress_hash(password, salt, kdf)
+    except ProtocolError:
+        return False
+    return hmac.compare_digest(got, want)
+
+def destroy(client):
+    """Crypto-erase the device. The client MUST already be authenticated with
+    operation 3 (destroy). Returns when the board confirms the wipe."""
+    client.exchange(5, b'\x08', secure=True)

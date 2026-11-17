@@ -127,3 +127,24 @@ Reference sources to consult and pin as appropriate:
 - HKDF: https://www.rfc-editor.org/rfc/rfc5869.html
 - TLS comparison (TLS not selected): https://www.rfc-editor.org/rfc/rfc8446.html
 
+
+## 7. Anti-forensic additions (post-milestone-5, 2026-11-11)
+
+Authorised stretch goals, software-implemented and logic-tested; hardware validation
+pending. Full detail in `ANTIFORENSIC.md` and `CLAUDE.md`; byte-level changes in
+`Control/PROTOCOL.md` and `Storage/FORMAT.md`.
+
+- **Crypto-erase (DESTROY):** authenticated `BEGIN` operation 3 + SECURE opcode 8. The
+  board zeroes both header copies (destroying the wrapped data key) then wipes the
+  credential journal, fail-safe ordered. Instant, permanent, unrecoverable for
+  encrypted volumes.
+- **Full secure-erase:** format-1 full initialization surfaced as an opt-in setup
+  method that overwrites every logical sector (for plaintext data or extra assurance).
+- **Duress/decoy password:** optional host-only Argon2id verifier in a version-2
+  authentication file; a decoy password at unlock triggers crypto-erase while showing an
+  ordinary wrong-password error. Protects the coerced-owner-at-the-GUI case only.
+- **UI:** broad GUI refresh — short card-specific confirm phrase, password show/hide,
+  strength meter, Caps-Lock hint, and erase/decoy controls.
+
+These add erasure options; they do not relax any security boundary in §2. Resolve the
+pending hardware checks in §8/HANDOFF before trusting them on real flash/SD.

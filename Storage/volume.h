@@ -26,4 +26,14 @@ void bp_volume_step(bp_volume *);
 int bp_volume_read(bp_volume *,uint32_t,uint8_t *,uint32_t);
 int bp_volume_write(bp_volume *,uint32_t,const uint8_t *,uint32_t);
 int bp_volume_ready(bp_volume *);
+/* Anti-forensic crypto-erase. Overwrites both on-card header copies (physical
+ * sectors 0..15), destroying both wrapped-data-key copies, THEN wipes the
+ * credential journal. For an encrypted (mode 2) volume this renders the data
+ * permanently unrecoverable even with the correct file and password, because the
+ * random data key existed only inside the now-destroyed wrapped-key field. For a
+ * plaintext (mode 1) volume it removes the volume binding and credentials but does
+ * NOT erase the data region; use the full secure-erase setup for that. Header
+ * writes are verified and happen first, so an SD failure (BP_IO) leaves the
+ * credential journal intact for a retry. */
+int bp_volume_destroy(bp_volume *);
 #endif

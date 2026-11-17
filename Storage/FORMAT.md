@@ -136,3 +136,39 @@ encrypted-mode write still encrypts its entire 512-byte sector. Credential
 requirements, LBA mapping, Adiantum, key wrapping and mounted-media gates are unchanged.
 Adiantum does not authenticate sectors. Even v1 full initialization does not
 guarantee sanitization of remapped flash cells.
+
+## Anti-forensic additions (2026-11-11)
+
+See `ANTIFORENSIC.md`. These do not change the 256-byte header layout above.
+
+### Authentication file version 2 (duress / decoy password)
+
+The host authentication JSON gains an optional `duress` object and bumps `version` to
+2 when present; version 1 files remain valid and carry no duress field. The verifier is
+**host-only** — it is never sent to the board.
+
+```
+duress = { "version": 1,
+           "salt":     <16-byte hex>,
+           "verifier": <32-byte hex Argon2id(decoy_password, salt)>,
+           "kdf":      [65536, 3, 1] }   # memory KiB, iterations, parallelism
+```
+
+At unlock the host first attempts the real key unwrap. Only on failure does it compare
+the entered password against this verifier (constant time). A match triggers the DESTROY
+flow (operation 3, opcode 8) and the host then reports an error identical to an ordinary
+wrong password. The decoy must differ from the real password. Mode-1 (plaintext) files
+do not take a duress verifier (there is no key to crypto-erase).
+
+### Crypto-erase and full secure-erase
+
+- **Crypto-erase (DESTROY).** Overwrites physical sectors 0..15 (both header copies),
+  destroying both copies of the AES-256-GCM-wrapped data key, then wipes the credential
+  journal. For an encrypted volume this is cryptographic erasure: the random data key
+  existed only inside the wrapped-key field and cannot be recovered afterward. For a
+  plaintext volume it removes the header and credentials but leaves the data region.
+- **Full secure-erase.** Format-1 full initialization, now surfaced as an opt-in setup
+  method (`--secure-erase` / GUI "Full secure-erase"). Every logical sector is written
+  (encrypted-zeros in mode 2, zeros in mode 1), removing old plaintext from the data
+  region. Slow by design; fast setup remains the default and still carries the
+  "old plaintext may remain recoverable" disclosure.
