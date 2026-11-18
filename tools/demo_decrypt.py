@@ -157,7 +157,7 @@ def main():
                 raise SystemExit('Give --file (plus password prompt) or --key')
 
             # The auth file holds the chip's ID and a 32-byte random root secret.
-            identity, root, _ = bpctl.load_file(a.file)
+            identity, root = bpctl.load_file(a.file)[:2]
 
             # The wrapped key lives in the header at the very start of the card.
             header = read_sectors(f, 0, 1)[:256]
