@@ -221,8 +221,64 @@ def u64(b, o): return struct.unpack_from('<Q', b, o)[0]
 
 
 class FileInfo:
-    def __init__(self, path, size, sectors, content, note=''):
+    """A file (or, with meta=True, a filesystem structure) and where it lives.
+
+    sectors: logical sectors holding the data, in order.
+    data_offset: byte offset of content[0] inside sectors[0] (non-zero for NTFS
+    small files, whose data sits inside the MFT record).
+    summary: human-readable decoding, shown for structures in text mode.
+    """
+
+    def __init__(self, path, size, sectors, content, note='', data_offset=0, meta=False, summary=''):
         self.path, self.size, self.sectors, self.content, self.note = path, size, sectors, content, note
+        self.data_offset, self.meta, self.summary = data_offset, meta, summary
+
+
+PART_TYPES = {0x01: 'FAT12', 0x04: 'FAT16', 0x06: 'FAT16', 0x07: 'NTFS / exFAT', 0x0B: 'FAT32 (CHS)',
+              0x0C: 'FAT32 (LBA)', 0x0E: 'FAT16 (LBA)', 0x0F: 'Extended', 0xEE: 'GPT protective'}
+GPT_TYPES = {'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7': 'Microsoft basic data',
+             'e3c9e316-0b5c-4db8-817d-f92df00215ae': 'Microsoft reserved',
+             'c12a7328-f81f-11d2-ba4b-00a0c93ec93b': 'EFI system'}
+
+
+def describe_boot(kind, bs):
+    serial = lambda v, n: f'{v:0{n}X}'
+    if kind == 'exFAT':
+        return '\n'.join([
+            'exFAT boot sector (volume boot record)', '',
+            f'Volume length        {u64(bs, 72):,} sectors',
+            f'FAT                  at +{u32(bs, 80):,}, {u32(bs, 84):,} sectors long',
+            f'Cluster heap         at +{u32(bs, 88):,}, {u32(bs, 92):,} clusters',
+            f'Cluster size         {512 << bs[109]:,} bytes',
+            f'Root directory       cluster {u32(bs, 96):,}',
+            f'Volume serial        {serial(u32(bs, 100), 8)}',
+            f'Signature            {bs[510]:02X} {bs[511]:02X}'])
+    if kind == 'NTFS':
+        return '\n'.join([
+            'NTFS boot sector (volume boot record)', '',
+            f'Bytes per sector     {u16(bs, 11)}',
+            f'Sectors per cluster  {bs[13]}',
+            f'Volume length        {u64(bs, 40):,} sectors',
+            f'$MFT                 cluster {u64(bs, 48):,}',
+            f'$MFTMirr             cluster {u64(bs, 56):,}',
+            f'Volume serial        {serial(u64(bs, 72), 16)}',
+            f'Signature            {bs[510]:02X} {bs[511]:02X}'])
+    fat32 = kind == 'FAT32'
+    lines = [f'{kind} boot sector (volume boot record)', '',
+             f'OEM name             {bs[3:11].decode("latin-1").strip()}',
+             f'Bytes per sector     {u16(bs, 11)}',
+             f'Sectors per cluster  {bs[13]}',
+             f'Reserved sectors     {u16(bs, 14)}',
+             f'Number of FATs       {bs[16]}',
+             f'Sectors per FAT      {(u32(bs, 36) if fat32 else u16(bs, 22)):,}',
+             f'Total sectors        {(u16(bs, 19) or u32(bs, 32)):,}']
+    if fat32:
+        lines.append(f'Root directory       cluster {u32(bs, 44):,}')
+    o = 67 if fat32 else 39
+    lines += [f'Volume serial        {serial(u32(bs, o), 8)}',
+              f'Volume label         {bs[o + 4:o + 15].decode("latin-1").strip()}',
+              f'Signature            {bs[510]:02X} {bs[511]:02X}']
+    return '\n'.join(lines)
 
 
 def vbr_kind(b):
@@ -235,48 +291,87 @@ def vbr_kind(b):
     return None
 
 
+def _structure(drive, name, lbas, summary, note=''):
+    data = drive.read(lbas[0], len(lbas)) if lbas == list(range(lbas[0], lbas[0] + len(lbas))) \
+        else b''.join(drive.read(l) for l in lbas)
+    return FileInfo(name, len(data), list(lbas), data, note=note, meta=True, summary=summary)
+
+
 def find_volume(drive):
-    """Locate the filesystem: superfloppy, MBR partition or GPT partition."""
+    """Locate the filesystem: superfloppy, MBR partition or GPT partition.
+
+    Returns (start, kind, boot sector, description, [partition-table structures]).
+    """
     s0 = drive.read(0)
     kind = vbr_kind(s0)
     if kind:
-        return 0, kind, s0, 'no partition table'
+        return 0, kind, s0, 'no partition table', []
     if s0[510:512] != b'\x55\xaa':
         raise ValueError('Decrypted sector 0 holds no partition table or filesystem. '
                          'Was the drive formatted through the Black Pill?')
     entries = [s0[446 + 16 * i:462 + 16 * i] for i in range(4)]
+    mbr_lines = ['Master Boot Record (sector 0 of the drive)', '']
+    for i, e in enumerate(entries, 1):
+        if e[4]:
+            mbr_lines.append(f'Partition {i}   type 0x{e[4]:02X} ({PART_TYPES.get(e[4], "?")}), '
+                             f'{"active, " if e[0] == 0x80 else ""}starts at drive sector {u32(e, 8):,} (card sector {u32(e, 8) + OFFSET:,}), '
+                             f'{u32(e, 12):,} sectors ({u32(e, 12) * SECTOR / 1e9:.2f} GB)')
+        else:
+            mbr_lines.append(f'Partition {i}   (empty)')
+    mbr_lines += [f'Signature     {s0[510]:02X} {s0[511]:02X}', '',
+                  f'Drive sector N is card sector N + {OFFSET}: the first {OFFSET} card sectors hold the BlackPill header.']
     starts, scheme = [], 'MBR'
+    structures = [_structure(drive, 'Partition table (MBR)', [0], '\n'.join(mbr_lines))]
     if any(e[4] == 0xEE for e in entries):
+        import uuid
         scheme = 'GPT'
         g = drive.read(1)
         if g[:8] != b'EFI PART':
             raise ValueError('Protective MBR found but no GPT header')
         elba, n, esz = u64(g, 72), u32(g, 80), u32(g, 84)
-        table = drive.read(elba, (min(n, 128) * esz + SECTOR - 1) // SECTOR)
+        nsec = (min(n, 128) * esz + SECTOR - 1) // SECTOR
+        table = drive.read(elba, nsec)
+        lines = ['GUID Partition Table', '',
+                 f'Disk GUID       {uuid.UUID(bytes_le=g[56:72])}',
+                 f'Usable sectors  {u64(g, 40):,} .. {u64(g, 48):,}',
+                 f'Entries         {n} x {esz} bytes at drive sector {elba:,}', '']
+        used = 0
         for i in range(min(n, 128)):
             e = table[i * esz:(i + 1) * esz]
             if any(e[:16]):
+                t = str(uuid.UUID(bytes_le=e[:16]))
+                label = e[56:128].decode('utf-16-le', 'replace').split('\x00')[0]
+                lines.append(f'Partition {i + 1}  {GPT_TYPES.get(t, t)}{f" {label!r}" if label else ""}, '
+                             f'drive sectors {u64(e, 32):,} .. {u64(e, 40):,} (card sector {u64(e, 32) + OFFSET:,} on)')
                 starts.append(u64(e, 32))
+                used = i + 1
+        shown = [1] + list(range(elba, elba + max(1, (used * esz + SECTOR - 1) // SECTOR)))
+        structures = [_structure(drive, 'Partition table (protective MBR)', [0], '\n'.join(mbr_lines)),
+                      _structure(drive, 'Partition table (GPT)', shown, '\n'.join(lines))]
     else:
         starts = [u32(e, 8) for e in entries if e[4]]
     for start in starts:
         b = drive.read(start)
         kind = vbr_kind(b)
         if kind:
-            return start, kind, b, f'{scheme} partition at sector {start:,}'
+            return start, kind, b, f'{scheme} partition at sector {start:,}', structures
     raise ValueError(f'{scheme} partition table found, but no FAT32/exFAT/NTFS volume in it')
 
 
 def list_files(drive, progress=lambda msg: None):
-    start, kind, bs, where = find_volume(drive)
+    """Returns (kind, description, files, structures)."""
+    start, kind, bs, where, structures = find_volume(drive)
     progress(f'{kind} filesystem ({where})')
+    structures.append(_structure(drive, 'Boot sector', [start], describe_boot(kind, bs)))
     if kind.startswith('FAT'):
-        files = _fat_files(drive, start, bs, kind == 'FAT32')
+        files, table, lines, title = *_fat_files(drive, start, bs, kind == 'FAT32'), 'File table (root directory)'
     elif kind == 'exFAT':
-        files = _exfat_files(drive, start, bs)
+        files, table, lines, title = *_exfat_files(drive, start, bs), 'File table (root directory)'
     else:
-        files = _ntfs_files(drive, start, bs)
-    return kind, where, sorted(files, key=lambda f: f.path.lower())
+        files, table, lines, title = *_ntfs_files(drive, start, bs), 'File table (MFT records)'
+    if table:
+        structures.append(_structure(drive, title, table, '\n'.join(lines)))
+    return kind, where, sorted(files, key=lambda f: f.path.lower()), structures
 
 
 def _read_content(drive, sectors, size):
@@ -317,20 +412,25 @@ def _fat_files(drive, start, bs, fat32):
             c = nxt(c)
         return out
 
-    def entries(sectors):
+    def entries(sectors, visited=None):
         for lba in sectors:
+            if visited is not None:
+                visited.append(lba)
             b = drive.read(lba)
             for o in range(0, SECTOR, 32):
                 if b[o] == 0:
                     return
                 yield b[o:o + 32]
 
-    files = []
+    files, root_lbas = [], []
+    lines = [f'{"FAT32" if fat32 else "FAT16"} root directory: 32-byte entries', '']
 
     def walk(sectors, prefix, depth):
         lfn = []
-        for e in entries(sectors):
+        for e in entries(sectors, root_lbas if depth == 0 else None):
             if e[0] == 0xE5:
+                if depth == 0:
+                    lines.append('Deleted entry')
                 lfn = []
                 continue
             if e[11] == 0x0F:
@@ -338,6 +438,8 @@ def _fat_files(drive, start, bs, fat32):
                 lfn.insert(0, part.decode('utf-16-le', 'replace').split('\x00')[0].rstrip('\uffff'))
                 continue
             if e[11] & 0x08:
+                if depth == 0:
+                    lines.append(f'Volume label  {e[0:11].decode("latin-1").strip()!r}')
                 lfn = []
                 continue
             base, ext = e[0:8].decode('latin-1').rstrip(), e[8:11].decode('latin-1').rstrip()
@@ -351,6 +453,10 @@ def _fat_files(drive, start, bs, fat32):
             if name in ('.', '..'):
                 continue
             cluster = (u16(e, 20) << 16 | u16(e, 26)) if fat32 else u16(e, 26)
+            if depth == 0:
+                where = f'cluster {cluster:,} (card sector {first_data + (cluster - 2) * spc + OFFSET:,})' if cluster else 'no clusters'
+                kind = 'Folder' if e[11] & 0x10 else 'File  '
+                lines.append(f'{kind}  {name!r}  8.3 name {short!r}  {u32(e, 28):,} bytes  first {where}')
             if e[11] & 0x10:
                 if depth < 4 and name.lower() not in SKIP_DIRS and cluster:
                     walk(chain_sectors(cluster, 64 * spc), prefix + name + '\\', depth + 1)
@@ -363,7 +469,8 @@ def _fat_files(drive, start, bs, fat32):
     root = (chain_sectors(u32(bs, 44), 64 * spc) if fat32
             else list(range(start + rsv + nfats * fatsz, start + rsv + nfats * fatsz + rootsecs)))
     walk(root, '', 0)
-    return files
+    lines.append('(end of directory)')
+    return files, root_lbas, lines
 
 
 # ---- exFAT ------------------------------------------------------------------
@@ -389,19 +496,34 @@ def _exfat_files(drive, start, bs):
             c = c + 1 if nofat else nxt(c)
         return out[:limit]
 
-    def entries(sectors):
+    def entries(sectors, visited=None):
         for lba in sectors:
+            if visited is not None:
+                visited.append(lba)
             b = drive.read(lba)
             for o in range(0, SECTOR, 32):
                 if b[o] == 0:
                     return
                 yield b[o:o + 32]
 
-    files = []
+    files, root_lbas = [], []
+    lines = ['exFAT root directory: 32-byte entries', '']
+    sector_of = lambda c: f'cluster {c:,} (card sector {start + heap + (c - 2) * spc + OFFSET:,})'
 
     def walk(sectors, prefix, depth):
-        it = entries(sectors)
+        it = entries(sectors, root_lbas if depth == 0 else None)
         for e in it:
+            if depth == 0:
+                if e[0] == 0x81:
+                    lines.append(f'Allocation bitmap   {sector_of(u32(e, 20))}, {u64(e, 24):,} bytes')
+                elif e[0] == 0x82:
+                    lines.append(f'Up-case table       {sector_of(u32(e, 20))}, {u64(e, 24):,} bytes')
+                elif e[0] == 0x83:
+                    lines.append(f'Volume label        {e[2:2 + 2 * e[1]].decode("utf-16-le", "replace")!r}')
+                elif e[0] == 0xA0:
+                    lines.append('Volume GUID entry')
+                elif e[0] == 0x05:   # 0x85 with the in-use bit cleared
+                    lines.append('Deleted file entry')
             if e[0] != 0x85:
                 continue
             count, attrs = e[1], u16(e, 4)
@@ -417,6 +539,11 @@ def _exfat_files(drive, start, bs):
             namelen = stream[3]
             name = b''.join(g[2:32] for g in group if g[0] == 0xC1).decode('utf-16-le', 'replace')[:namelen]
             nofat, cluster, length = bool(stream[1] & 2), u32(stream, 20), u64(stream, 24)
+            if depth == 0:
+                kind = 'Folder' if attrs & 0x10 else 'File  '
+                where = f'first {sector_of(cluster)}' if cluster else 'no clusters'
+                lines.append(f'{kind}              {name!r}  {length:,} bytes  {where}'
+                             f'{"  contiguous" if nofat else ""}  ({1 + count} entries)')
             if attrs & 0x10:
                 if depth < 4 and name.lower() not in SKIP_DIRS and cluster:
                     walk(sectors_of(cluster, nofat, length, 64 * spc), prefix + name + '\\', depth + 1)
@@ -427,7 +554,8 @@ def _exfat_files(drive, start, bs):
             files.append(FileInfo(prefix + name, length, used, content))
 
     walk(sectors_of(rootc, False, 0, 64 * spc), '', 0)
-    return files
+    lines.append('(end of directory)')
+    return files, root_lbas, lines
 
 
 # ---- NTFS -------------------------------------------------------------------
@@ -468,14 +596,14 @@ def _ntfs_files(drive, start, bs):
             t, ln = u32(r, o), u32(r, o + 4)
             if t == 0xFFFFFFFF or ln == 0:
                 return
-            yield t, r[o:o + ln]
+            yield t, r[o:o + ln], o
             o += ln
 
     # Map MFT record numbers to sectors using $MFT's own (record 0) run list.
     first = start + mftc * spc
     r0 = fixup(drive.read(first, per))
     mft_sectors = []
-    for t, a in attrs(r0):
+    for t, a, _ in attrs(r0):
         if t == 0x80 and a[8]:
             for lcn, n in _runs(a, u16(a, 32), len(a)):
                 base = start + lcn * spc
@@ -498,7 +626,7 @@ def _ntfs_files(drive, start, bs):
         r = fixup(r)
         is_dir = bool(u16(r, 22) & 2)
         best, data = None, None
-        for t, a in attrs(r):
+        for t, a, aoff in attrs(r):
             if t == 0x30 and not a[8]:
                 c = a[u16(a, 20):]
                 ns = c[65]
@@ -510,7 +638,7 @@ def _ntfs_files(drive, start, bs):
                     data = ('runs', u64(a, 48), _runs(a, u16(a, 32), len(a)))
                 else:
                     off, ln = u16(a, 20), u32(a, 16)
-                    data = ('resident', ln, a[off:off + ln])
+                    data = ('resident', ln, a[off:off + ln], aoff + off)   # offset inside the record
         if best is None:
             continue
         names[i] = (best[0], best[1])
@@ -525,14 +653,19 @@ def _ntfs_files(drive, start, bs):
             parts.insert(0, nm)
         return '\\'.join(parts)
 
-    files = []
+    files, table = [], []
+    lines = [f'NTFS Master File Table: {rec}-byte records, one per file', '']
     for i, parent, name, data, lbas in raw_files:
         path = path_of(parent, name)
         if path.startswith('$') or path.lower().split('\\')[0] in SKIP_DIRS:
             continue
+        if len(table) < 8:   # show up to four records' worth of sectors
+            table += lbas
         if data[0] == 'resident':
-            files.append(FileInfo(path, data[1], lbas, data[2][:CONTENT_LIMIT],
-                                  note='small file: stored inside its MFT record'))
+            lines.append(f'Record {i:<5} {path!r}  {data[1]:,} bytes  data stored IN the record '
+                         f'(card sector {lbas[0] + OFFSET:,}, offset {data[3]})')
+            files.append(FileInfo(path, data[1], lbas, data[2][:CONTENT_LIMIT], data_offset=data[3],
+                                  note='inside its MFT record'))
         else:
             secs = []
             for lcn, n in data[2]:
@@ -540,9 +673,13 @@ def _ntfs_files(drive, start, bs):
                 secs += range(base, base + n * spc)
                 if len(secs) * SECTOR >= CONTENT_LIMIT:
                     break
+            runs = ', '.join(f'{n:,} clusters at card sector {start + lcn * spc + OFFSET:,}' for lcn, n in data[2][:3])
+            lines.append(f'Record {i:<5} {path!r}  {data[1]:,} bytes  data runs: {runs}')
             content, used = _read_content(drive, secs, data[1])
             files.append(FileInfo(path, data[1], used, content))
-    return files
+    if len(files) * per > len(table):
+        lines += ['', f'(the hex panels show the first {len(table) // per} records only)']
+    return files, table, lines
 
 
 # =============================================================================
@@ -556,6 +693,32 @@ def hexdump(data, base=0, limit=1024):
         hx = ' '.join(f'{c:02x}' for c in chunk)
         txt = ''.join(chr(c) if 32 <= c < 127 else '.' for c in chunk)
         lines.append(f'{base + o:08x}  {hx:<47}  {txt}')
+    if len(data) > limit:
+        lines.append(f'... ({len(data) - limit:,} more bytes)')
+    return '\n'.join(lines)
+
+
+def card_hexdump(data, sectors, start=0, limit=4096):
+    """Hex dump labelled with real card byte addresses.
+
+    data[0] sits at byte `start` of logical sector sectors[0]; data continues
+    through sectors[1], sectors[2]... which need not be contiguous on the card.
+    A separator line marks each jump to a non-adjacent sector.
+    """
+    lines, prev = [], None
+    for o in range(0, min(len(data), limit), 16):
+        pos = start + o
+        idx = pos // SECTOR
+        if idx >= len(sectors):
+            break
+        card_sector = sectors[idx] + OFFSET
+        if prev is not None and card_sector not in (prev, prev + 1):
+            lines.append(f'--- jumps to card sector {card_sector:,} ---')
+        prev = card_sector
+        chunk = data[o:o + 16]
+        hx = ' '.join(f'{c:02x}' for c in chunk)
+        txt = ''.join(chr(c) if 32 <= c < 127 else '.' for c in chunk)
+        lines.append(f'{card_sector * SECTOR + pos % SECTOR:08x}  {hx:<47}  {txt}')
     if len(data) > limit:
         lines.append(f'... ({len(data) - limit:,} more bytes)')
     return '\n'.join(lines)
@@ -1034,11 +1197,11 @@ class App:
         def work():
             key = unwrap_key(card, auth, pw, step)
             drive = Drive(card, key)
-            kind, where, files = list_files(drive)
-            return key, drive, kind, where, files
+            kind, where, files, structures = list_files(drive)
+            return key, drive, kind, where, files, structures
 
         def done(result):
-            self.key, self.drive, kind, where, self.files = result
+            self.key, self.drive, kind, where, self.files, self.structures = result
             self.fs_desc = f'{kind}, {where}'
             self.password.set('')
             if self.unlock_btn.winfo_exists():
@@ -1089,8 +1252,16 @@ class App:
         self.file_list.column('#0', width=int(260 * self.scale))
         self.file_list.column('size', width=int(95 * self.scale), anchor='e')
         self.file_list.pack(fill='y', expand=True)
+        self.items = {}
+        self.file_list.insert('', 'end', iid='g_meta', text='Drive structure', open=True)
+        for i, s in enumerate(self.structures):
+            self.file_list.insert('g_meta', 'end', iid=f'm{i}', text=s.path,
+                                  values=(f'{len(s.sectors)} sector{"s" if len(s.sectors) != 1 else ""}',))
+            self.items[f'm{i}'] = s
+        self.file_list.insert('', 'end', iid='g_files', text='Files', open=True)
         for i, f in enumerate(self.files):
-            self.file_list.insert('', 'end', iid=str(i), text=f.path, values=(human(f.size),))
+            self.file_list.insert('g_files', 'end', iid=f'f{i}', text=f.path, values=(human(f.size),))
+            self.items[f'f{i}'] = f
         self.file_list.bind('<<TreeviewSelect>>', lambda _: self.show_file())
 
         right = ttk.Frame(main)
@@ -1120,45 +1291,51 @@ class App:
         ttk.Button(bar, text='Save decrypted copy...', command=self.save_file).pack(side='right')
 
         if not self.files:
-            self.set_text(self.cipher_text, 'No files found on the drive.')
+            self.file_list.selection_set('m0')
             return
         # Prefer a non-empty .txt in the root folder (the demo file), then any .txt.
         order = sorted(range(len(self.files)), key=lambda i: (
             not self.files[i].path.lower().endswith('.txt'), self.files[i].size == 0,
             '\\' in self.files[i].path, i))
-        pick = order[0]
-        self.file_list.selection_set(str(pick))
-        self.file_list.focus(str(pick))
+        pick = f'f{order[0]}'
+        self.file_list.selection_set(pick)
+        self.file_list.focus(pick)
 
     def current(self):
         sel = self.file_list.selection()
-        return self.files[int(sel[0])] if sel else None
+        return self.items.get(sel[0]) if sel else None
 
     def show_file(self):
         f = self.current()
         if f is None:
             return
-        shown = f.sectors[:4]
+        # Top: the raw ciphertext of the sectors holding this item.
+        shown = f.sectors[:8] if f.meta else f.sectors[:2]
         if shown:
-            raw = self.drive.raw(shown[0], 1) if len(shown) == 1 else b''.join(self.drive.raw(s) for s in shown)
+            raw = b''.join(self.drive.raw(s) for s in shown)
             first, last = shown[0] + OFFSET, shown[-1] + OFFSET
             where = f'card sector {first:,}' if first == last else f'card sectors {first:,}-{last:,}'
-            if f.sectors != list(range(f.sectors[0], f.sectors[0] + len(f.sectors))):
-                where += ' (first fragment)'
+            if shown != list(range(shown[0], shown[0] + len(shown))):
+                where = f'card sectors from {first:,} (not contiguous)'
             self.cipher_title.configure(text=f'On the card (ciphertext): {where}' + (f' - {f.note}' if f.note else ''))
-            self.set_text(self.cipher_text, hexdump(raw, first * SECTOR, 1024))
+            self.set_text(self.cipher_text, card_hexdump(raw, shown, 0, len(raw)))
         else:
             self.cipher_title.configure(text='On the card (ciphertext)')
             self.set_text(self.cipher_text, 'Empty file: no data sectors.')
+        # Bottom: the same bytes decrypted, labelled with the same card addresses.
         body = f.content
         if self.as_hex.get():
-            value = hexdump(body, 0, 4096)
+            value = card_hexdump(body, f.sectors, f.data_offset, len(shown) * SECTOR if f.meta else 4096)
+        elif f.meta:
+            value = f.summary + '\n\n(Tick "Show as hex" to see the decrypted bytes.)'
         else:
             value = body.decode('utf-8-sig', 'replace') if not body.startswith((b'\xff\xfe', b'\xfe\xff')) \
                 else body.decode('utf-16', 'replace')
-        if f.size > len(body):
+        if not f.meta and f.size > len(body):
             value += f'\n\n[... showing first {human(len(body))} of {human(f.size)}]'
         self.set_text(self.plain_text, value)
+        dense = f.meta or self.as_hex.get()
+        self.plain_text.configure(wrap='none' if self.as_hex.get() else 'word', font=(MONO, 11 if dense else 13))
 
     def save_file(self):
         f = self.current()
