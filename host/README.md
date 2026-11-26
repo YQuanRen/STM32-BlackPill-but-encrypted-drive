@@ -4,8 +4,7 @@ Milestone 5 adds the Tkinter GUI and a portable Windows executable. End-user
 instructions are in [WINDOWS.md](WINDOWS.md). Launch the built application at
 `build/dist/BlackPillDrive/BlackPillDrive.exe`, or run `python host/gui.py` after
 installing `host/requirements.txt`. GUI setup and unlock use the existing tested
-protocol/volume modules. Physical acceptance remains pending in
-[VALIDATION.md](VALIDATION.md).
+protocol/volume modules. Testing on physical hardware is still pending.
 
 **Fast setup (2026-10-21):** update both firmware and utility. New setups use
 header version 2 and prepare only the first 34 and last 33 logical sectors,
