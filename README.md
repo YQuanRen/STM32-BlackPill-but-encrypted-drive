@@ -2,7 +2,6 @@
 
 A low-cost encrypted USB thumb drive built from off-the-shelf parts: an STM32F411 "Black Pill" board and a microSD card module. The drive stays locked until you unlock it with a desktop utility, and in encrypted mode every sector on the SD card is encrypted with [Adiantum](https://github.com/google/adiantum).
 
-> **Status: student prototype.** The firmware and desktop utility are software-tested (see [Tests](#tests)), but they have not been fully validated on hardware. This is not a certified secure device. Read [Security model and limitations](#security-model-and-limitations) before trusting it with real data.
 
 ## Features
 
@@ -94,11 +93,13 @@ The output is `build/Release/BlackPill_homemade_thumbdrive.elf`.
 
 ### Flashing
 
+1. Use debugger and set up according to your own env (recommended)
+
+**OR**
+
 1. Hold **BOOT0**, tap **NRST**, and release BOOT0 to enter USB DFU mode.
 2. In STM32CubeProgrammer, connect over **USB**, open the `.elf` file and click **Download**.
 3. Reconnect the board.
-
-Don't run a full chip erase on a drive that has been set up. Flash sectors 6 and 7 hold its credentials.
 
 ## Using the drive
 
@@ -148,56 +149,6 @@ python host/bpctl.py list
 python host/bpctl.py unlock --device <32-hex-digit id> --file D:\blackpill-auth.json
 ```
 
-## Tests
-
-The host-side tests compile the firmware's C code (control, storage and crypto) into shared libraries and drive them from Python. No hardware is needed. They need a C compiler, CMake, Ninja and Python 3 with the packages in `host/requirements.txt` and `tests/crypto/requirements.txt`.
-
-```bash
-cmake -S tests/crypto -B build/test-crypto -G Ninja && cmake --build build/test-crypto
-```
-
-```bash
-python tests/crypto/test_adiantum.py build/test-crypto/libadiantum_test.so
-```
-
-Build the other simulators the same way: `tests/control` produces `libbp_sim.so` and `tests/storage` produces `libstorage_sim.so`. Then run the suites:
-
-```bash
-python tests/control/test_control.py build/test-control/libbp_sim.so
-```
-
-```bash
-python tests/storage/test_storage.py build/test-storage/libstorage_sim.so
-```
-
-```bash
-python tests/storage/test_fast_setup.py build/test-storage/libstorage_sim.so
-```
-
-```bash
-python tests/host/test_antiforensic.py build/test-storage/libstorage_sim.so
-```
-
-```bash
-python tests/host/test_gui.py build/test-storage/libstorage_sim.so
-```
-
-```bash
-bash tests/antiforensic/run.sh
-```
-
-On Windows the simulators are `.dll` files. The GUI tests need Tkinter.
-
-The suites check:
-- Adiantum against Google's official test vectors and Python reference.
-- The USB descriptors and HID exchange.
-- The authentication protocol.
-- Journal power-cut and corruption cases.
-- Setup interruption at every write.
-- The unlock flow, including a wrong password.
-- Crypto-erase.
-
-They are simulations; they do not prove hardware behaviour.
 
 ## Security model and limitations
 
