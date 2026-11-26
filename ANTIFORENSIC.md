@@ -2,9 +2,9 @@
 
 Added 2026-11-11. These are defensive protections for the drive's user:
 ways to make the owner's data unrecoverable on demand or under coercion. They do not
-change the base threat model in `IMPLEMENTATION_PLAN.md` §2; they add erasure options
-on top of it. Status: **software/logic implemented and logic-tested; hardware pending**
-(see `CLAUDE.md`).
+change the base threat model in [README.md](README.md#security-model-and-limitations); they add
+erasure options on top of it. Status: **software implemented and logic-tested; hardware
+validation pending**.
 
 There are three mechanisms.
 
@@ -85,6 +85,6 @@ is never contacted.
 
 Adiantum still provides confidentiality, not sector authentication or rollback
 protection. Full-sector initialization is not a guarantee about remapped/worn SD flash
-cells. The USB identity is still the development ST VID/PID. All limitations in
-`IMPLEMENTATION_PLAN.md` §2 remain. Crypto-erase and secure-erase are irreversible by
+cells. The USB identity is still the development ST VID/PID. All limitations listed in
+[README.md](README.md#security-model-and-limitations) remain. Crypto-erase and secure-erase are irreversible by
 design and require explicit confirmation.
