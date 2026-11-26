@@ -1,4 +1,4 @@
-# Tel Aviv Thumbdrive
+# STM32 homemade encrypted thumb drive
 
 A low-cost encrypted USB thumb drive built from off-the-shelf parts: an STM32F411 "Black Pill" board and a microSD card module. The drive stays locked until you unlock it with a desktop utility, and in encrypted mode every sector on the SD card is encrypted with [Adiantum](https://github.com/google/adiantum).
 
