@@ -93,7 +93,7 @@ The output is `build/Release/BlackPill_homemade_thumbdrive.elf`.
 
 ### Flashing
 
-1. Use debugger and set up according to your own env (recommended)
+1. Use debugger and set up according to your own env. You do not need to build a binary for this (RECOMMENDED)
 
 **OR**
 
